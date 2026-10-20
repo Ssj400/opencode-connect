@@ -56,6 +56,9 @@ cd opencode-connect
    `tempfile`; you can set `TMPDIR`. The audit expects an exportable source tree,
    not an installation containing `routes.json` or runtime state. It deletes nothing.
    After configuration, run the audit against a clean export instead.
+   To also catch names no heuristic can know, such as a VPN, host, or person, list
+   them one per line in a private file outside the checkout and set
+   `OPENCODE_CONNECT_AUDIT_TERMS` to its path. Findings cite line numbers, not terms.
 
 2. Create private configuration without overwriting an existing file:
 

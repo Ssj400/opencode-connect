@@ -12,6 +12,7 @@ import sys
 from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import patch
+import uuid
 
 import audit_public
 import collab
@@ -74,15 +75,53 @@ class PublicTests(unittest.TestCase):
 
     def test_privacy_rules_with_generated_synthetic_values(self):
         # Construct synthetic samples; do not embed operational identifiers/tokens.
+        token = "aB3" * 11
         samples = ["/home/" + "fictional-person" + "/project",
-                   ".".join(("10", "20", "30", "40")),
-                   "ses_" + "A" * 24, "msg_" + "a" * 32,
-                   "SHA256:" + "A" * 43, "ghp_" + "a" * 36,
-                   "-----BEGIN " + "PRIVATE KEY-----"]
-        for sample in samples:
-            with self.subTest(kind=len(sample)):
+                   ".".join(("10", "20", "30", "40")), ".".join(("100", "101", "102", "103")),
+                   "[" + ":".join(("fd12", "3456", "789a")) + "::1]:8765",
+                   ":".join(("2606", "4700")) + "::1111", "fe80" + "::1%eth0",
+                   "laptop.example" + ".ts.net",
+                   "ses_" + "A" * 24, "msg_" + "a" * 32, "claude:" + str(uuid.UUID(int=1)),
+                   "SHA256:" + "A" * 43, "ghp_" + "a" * 36, "github_pat_" + "a" * 30,
+                   "tskey-" + "auth-" + "a" * 20, "xoxb-" + "1" * 12, "AKIA" + "A" * 16,
+                   "eyJ" + "a" * 10 + ".eyJ" + "a" * 10 + ".signature",
+                   "Authorization: Bearer " + token[:20], json.dumps({"token": token[:20]}),
+                   "card " + token, "-----BEGIN " + "PRIVATE KEY-----"]
+        for index, sample in enumerate(samples):
+            with self.subTest(sample=index):
                 self.assertTrue(audit_public.findings(sample))
-        self.assertEqual(audit_public.findings("192.0.2.10 ses_REPLACE_LINUX /home/example/project"), [])
+        placeholders = ["192.0.2.10 ses_REPLACE_LINUX /home/example/project",
+                        "2001:db8::10 [::1]:8765 :: items[1::2] text[::-1] 10:22:33",
+                        "unique local fc00::/7, link-local fe80::/10, global 2000::/3",
+                        "claude:00000000-0000-0000-0000-000000000000 claude:<uuid>",
+                        'headers={"Authorization": "Bearer " + card["token"]}',
+                        'f"Bearer {token}" {"token": "REPLACE_WITH_CARD_TOKEN"}',
+                        hashlib.sha256(b"export").hexdigest(), "ExampleContactCardTokenPlaceholder",
+                        "EXAMPLE_TOKEN_0123456789_ABCDEFGHIJ",
+                        "test_untrust_rollback_restores_token_card_and_pending_2"]
+        for index, sample in enumerate(placeholders):
+            with self.subTest(placeholder=index):
+                self.assertEqual(audit_public.findings(sample), [])
+
+    def test_private_deny_list_is_read_at_runtime_and_never_echoed(self):
+        term = "fictional" + "-mesh"
+        with TemporaryDirectory(prefix="audit-terms-") as folder:
+            path = Path(folder) / "terms.txt"
+            path.write_text("# private names, one per line\n\n  " + term.upper() + "  \n")
+            with patch.dict(os.environ, {audit_public.TERMS_VARIABLE: str(path)}):
+                terms = audit_public.private_terms()
+            self.assertEqual(terms, ((3, term),))
+            issues = audit_public.findings("listen on " + term + "0", terms)
+            self.assertEqual(issues, ["Term from line 3 of the private deny-list"])
+            self.assertNotIn(term, " ".join(issues))
+            self.assertEqual(audit_public.findings("listen on 192.0.2.10", terms), [])
+            with patch.dict(os.environ, {audit_public.TERMS_VARIABLE: str(path) + ".missing"}):
+                with self.assertRaises(OSError):
+                    audit_public.private_terms()
+                with contextlib.redirect_stdout(io.StringIO()):
+                    self.assertEqual(audit_public.main(), 2)
+        with patch.dict(os.environ, {audit_public.TERMS_VARIABLE: ""}):
+            self.assertEqual(audit_public.private_terms(), ())
 
     def test_no_agent_cancellation_or_auto_chat(self):
         for module in exported_modules():
