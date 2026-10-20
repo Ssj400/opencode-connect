@@ -11,11 +11,16 @@ import sys
 import tempfile
 import unittest
 from unittest.mock import Mock, patch
+import uuid
 
 import collab
 import config
 from core import BridgeError, relay_once
-from local_bridge import LocalMailbox, deliver_local, local_adapter, local_relay_once, session, state_root
+from local_bridge import (LocalMailbox, canonical, deliver_local, local_adapter, local_relay_once,
+                          session, state_root)
+
+# Synthetic Claude Code session ID, built at runtime so no operational-looking ID is stored.
+CLAUDE_SESSION = str(uuid.UUID(int=1))
 from local_mcp_server import call_tool
 from opencode_adapter import OpenCodeAdapter
 
@@ -95,6 +100,18 @@ class LocalNodeValidationTests(unittest.TestCase):
             with self.subTest(node=node), self.assertRaises(BridgeError):
                 config.local_node(node)
 
+    def test_reserved_namespaces_cannot_be_node_names(self):
+        for node in ("claude", "Claude", "person", "PERSON"):
+            with self.subTest(node=node):
+                with patch.dict(os.environ, {"OPENCODE_CONNECT_LOCAL_NODE": node}):
+                    with self.assertRaisesRegex(BridgeError, "reserved"):
+                        config.local_node()
+                with self.assertRaisesRegex(BridgeError, "reserved"):
+                    config.local_node(node)
+        for node in ("claudette", "personal", "claude2"):
+            with self.subTest(node=node):
+                self.assertEqual(config.local_node(node), node)
+
     def test_session_accepts_only_bare_alias_or_own_canonical_address(self):
         for value in ("ses_ALPHA", "local:ses_ALPHA", "linux:ses_ALPHA"):
             with self.subTest(value=value):
@@ -105,6 +122,21 @@ class LocalNodeValidationTests(unittest.TestCase):
                 session(value, node="linux")
         with patch.dict(os.environ, {"OPENCODE_CONNECT_LOCAL_NODE": "linux"}):
             self.assertEqual(session("linux:ses_ALPHA"), "ses_ALPHA")
+
+    def test_canonical_addresses_cover_three_namespaces(self):
+        cases = {"ses_ALPHA": "linux:ses_ALPHA", "local:ses_ALPHA": "linux:ses_ALPHA",
+                 "linux:ses_ALPHA": "linux:ses_ALPHA",
+                 "claude:" + CLAUDE_SESSION.upper(): "claude:" + CLAUDE_SESSION,
+                 "person:Alice": "person:alice", "person:bob_2-x": "person:bob_2-x"}
+        for value, expected in cases.items():
+            with self.subTest(value=value):
+                self.assertEqual(canonical(value, node="linux"), expected)
+        invalid = ("wsl:ses_ALPHA", "other:ses_ALPHA", "linux:local:ses_ALPHA", "linux:",
+                   "claude:ses_ALPHA", "claude:not-a-uuid", "claude:" + CLAUDE_SESSION + "\n",
+                   "person:", "person:has space", "person:a/b", "person:1abc", "", None, 7)
+        for value in invalid:
+            with self.subTest(value=value), self.assertRaises(BridgeError):
+                canonical(value, node="linux")
 
 
 class LocalIdentityQueueTests(unittest.TestCase):
@@ -135,6 +167,114 @@ class LocalIdentityQueueTests(unittest.TestCase):
             sent = self.box.enqueue("ses_ALPHA", "ses_BETA", "Synthetic " + state)
             with self.box.db:
                 self.box.db.execute("UPDATE messages SET state=? WHERE id=?", (state, sent["id"]))
+
+    def insert_pending(self, box, source, target, created):
+        """A row from another producer, written with the real schema."""
+        message_id = "msg_" + uuid.uuid4().hex
+        payload = {"text": "Synthetic row", "source_id": source.split(":", 1)[1],
+                   "target_id": target.split(":", 1)[1],
+                   "source_address": source, "target_address": target}
+        with box.db:
+            box.db.execute("INSERT INTO messages VALUES (?,?,?,?,?,?,?,?,NULL)",
+                           (message_id, created, source, target, "queue", "message",
+                            json.dumps(payload), "pending"))
+        return message_id
+
+    def test_each_consumer_claims_only_its_own_namespace(self):
+        self.box.enqueue("ses_ALPHA", "ses_BETA", "Bind the contract")
+        self.box.claim()
+        claude = "claude:" + CLAUDE_SESSION
+        other_claude = "claude:" + str(uuid.UUID(int=2))
+        rows = {"claude": self.insert_pending(self.box, "linux:ses_ALPHA", claude, 1.0),
+                "other": self.insert_pending(self.box, "linux:ses_ALPHA", other_claude, 2.0),
+                "person": self.insert_pending(self.box, "linux:ses_ALPHA", "person:alice", 3.0),
+                "opencode": self.insert_pending(self.box, claude, "linux:ses_BETA", 4.0)}
+        self.assertEqual(self.box.claim()["id"], rows["opencode"])
+        self.assertIsNone(self.box.claim())
+        self.assertEqual(self.box.claim(claude)["id"], rows["claude"])
+        self.assertIsNone(self.box.claim(claude))
+        self.assertEqual(self.box.claim("person:")["id"], rows["person"])
+        self.assertEqual(self.box.claim("claude:")["id"], rows["other"])
+
+    def test_claim_prefix_is_literal_not_a_like_pattern(self):
+        box = self.open_box("lin_x")
+        box.enqueue("ses_ALPHA", "ses_BETA", "Bind the contract")
+        box.claim()
+        self.insert_pending(box, "linAx:ses_ALPHA", "linAx:ses_FOREIGN", 1.0)
+        self.assertIsNone(box.claim())
+
+    def set_stored_contract(self, version, node="linux"):
+        with self.box.db:
+            self.box.db.execute("UPDATE local_contract SET schema_version=?, canonical_node=? WHERE singleton=1",
+                                (version, node))
+
+    def test_version_1_queue_fails_closed_until_migrated_with_rows_untouched(self):
+        self.seed_states()
+        self.set_stored_contract(1)
+        before = self.records()
+        self.assert_blocked_unchanged(self.box)
+        self.assertTrue(self.box.diagnostics()["migration_needed"])
+        self.assertEqual(self.box.migrate(), {"migrated": True, "contract": self.box.contract})
+        self.assertEqual(self.records(), before)
+        self.assertEqual(self.contract()["schema_version"], 2)
+        self.assertEqual(self.box.migrate(), {"migrated": False, "contract": self.box.contract})
+        self.assertEqual(self.box.claim()["payload"]["text"], "Synthetic pending")
+
+    def test_migration_refuses_other_nodes_and_unknown_versions(self):
+        self.seed_states()
+        for version, node in ((1, "wsl"), (3, "linux")):
+            with self.subTest(version=version, node=node):
+                self.set_stored_contract(version, node)
+                before = self.records()
+                with self.assertRaisesRegex(BridgeError, "Only a version 1 queue"):
+                    self.box.migrate()
+                self.assertEqual((self.contract()["schema_version"], self.contract()["canonical_node"]),
+                                 (version, node))
+                self.assertEqual(self.records(), before)
+
+    def test_unbound_queue_needs_no_migration(self):
+        self.assertEqual(self.box.migrate(), {"migrated": False, "contract": None})
+        self.assertIsNone(self.contract())
+
+    def test_version_1_code_fails_closed_on_a_version_2_queue(self):
+        self.seed_states()
+        old = self.open_box("linux")
+        old.contract = {**old.contract, "schema_version": 1}
+        self.assert_blocked_unchanged(old)
+
+    def test_concurrent_migrations_upgrade_exactly_once(self):
+        self.seed_states()
+        self.set_stored_contract(1)
+
+        def migrate(_):
+            box = LocalMailbox(self.root, node="linux")
+            try:
+                return box.migrate()["migrated"]
+            finally:
+                box.db.close()
+
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            results = list(pool.map(migrate, range(4)))
+        self.assertEqual(results.count(True), 1)
+        self.assertEqual(self.contract()["schema_version"], 2)
+
+    def test_resolve_records_a_human_outcome_only_for_stale_states(self):
+        self.seed_states()
+        rows = {row["state"]: row["id"] for row in self.box.db.execute("SELECT id, state FROM messages")}
+        self.assertEqual(self.box.resolve(rows["sending"], "delivered"), {"id": rows["sending"], "state": "delivered"})
+        self.assertEqual(self.box.resolve(rows["uncertain"], "failed")["state"], "failed")
+        result = json.loads(self.box.db.execute("SELECT result FROM messages WHERE id=?",
+                                                (rows["sending"],)).fetchone()[0])
+        self.assertEqual(result, {"resolved_from": "sending", "by": "operator"})
+        for message_id, state in ((rows["pending"], "failed"), (rows["sending"], "failed"),
+                                  ("msg_" + "0" * 32, "failed"), (rows["pending"], "pending")):
+            with self.subTest(message_id=message_id, state=state), self.assertRaises(BridgeError):
+                self.box.resolve(message_id, state)
+
+    def test_claim_requires_a_namespace(self):
+        for match in ("", "linux", "person", b"linux:", 7):
+            with self.subTest(match=match), self.assertRaises(BridgeError):
+                self.box.claim(match)
 
     def assert_blocked_unchanged(self, box):
         before = self.records()
@@ -171,6 +311,29 @@ class LocalIdentityQueueTests(unittest.TestCase):
             with self.subTest(source=source, target=target), self.assertRaises(BridgeError):
                 self.box.enqueue(source, target, "Synthetic foreign message")
         self.assertEqual(self.records(), [])
+
+    def test_remote_people_never_enter_as_queue_sources(self):
+        for source in ("person:alice", "person:ALICE"):
+            with self.subTest(source=source):
+                with self.assertRaisesRegex(BridgeError, "only through the courier"):
+                    self.box.enqueue(source, "ses_BETA", "Forged inbound message")
+        self.assertEqual(self.records(), [])
+
+    def test_claude_sources_and_claude_or_person_targets_are_queued_canonically(self):
+        claude = "claude:" + CLAUDE_SESSION
+        cases = ((("ses_ALPHA", "claude:" + CLAUDE_SESSION.upper()), ("linux:ses_ALPHA", claude)),
+                 (("ses_ALPHA", "person:Alice"), ("linux:ses_ALPHA", "person:alice")),
+                 ((claude, "local:ses_BETA"), (claude, "linux:ses_BETA")))
+        for (source, target), expected in cases:
+            with self.subTest(source=source, target=target):
+                sent = self.box.enqueue(source, target, "Synthetic question")
+                row = self.box.db.execute("SELECT source, target, payload FROM messages WHERE id=?",
+                                          (sent["id"],)).fetchone()
+                payload = json.loads(row["payload"])
+                self.assertEqual((row["source"], row["target"]), expected)
+                self.assertEqual((payload["source_address"], payload["target_address"]), expected)
+        with self.assertRaisesRegex(BridgeError, "own session"):
+            self.box.enqueue(claude, "claude:" + CLAUDE_SESSION.upper(), "Self in another spelling")
 
     def test_node_is_pinned_when_environment_changes(self):
         with patch.dict(os.environ, {"OPENCODE_CONNECT_LOCAL_NODE": "linux"}):
@@ -315,8 +478,10 @@ class LocalIdentityQueueTests(unittest.TestCase):
         for box, compatible in ((self.box, True), (self.open_box("wsl"), False)):
             with self.subTest(node=box.node):
                 result = box.diagnostics()
-                self.assertEqual(set(result), {"configured", "stored", "queue_path", "compatible"})
+                self.assertEqual(set(result), {"configured", "stored", "queue_path", "compatible",
+                                               "migration_needed"})
                 self.assertEqual(result["compatible"], compatible)
+                self.assertFalse(result["migration_needed"])
                 self.assertEqual(result["configured"]["canonical_node"], box.node)
                 self.assertEqual(result["stored"]["canonical_node"], "linux")
                 self.assertIsInstance(result["queue_path"], str)
