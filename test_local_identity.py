@@ -168,6 +168,46 @@ class LocalIdentityQueueTests(unittest.TestCase):
             with self.box.db:
                 self.box.db.execute("UPDATE messages SET state=? WHERE id=?", (state, sent["id"]))
 
+    def insert_pending(self, box, source, target, created):
+        """A row from another producer, written with the real schema."""
+        message_id = "msg_" + uuid.uuid4().hex
+        payload = {"text": "Synthetic row", "source_id": source.split(":", 1)[1],
+                   "target_id": target.split(":", 1)[1],
+                   "source_address": source, "target_address": target}
+        with box.db:
+            box.db.execute("INSERT INTO messages VALUES (?,?,?,?,?,?,?,?,NULL)",
+                           (message_id, created, source, target, "queue", "message",
+                            json.dumps(payload), "pending"))
+        return message_id
+
+    def test_each_consumer_claims_only_its_own_namespace(self):
+        self.box.enqueue("ses_ALPHA", "ses_BETA", "Bind the contract")
+        self.box.claim()
+        claude = "claude:" + CLAUDE_SESSION
+        other_claude = "claude:" + str(uuid.UUID(int=2))
+        rows = {"claude": self.insert_pending(self.box, "linux:ses_ALPHA", claude, 1.0),
+                "other": self.insert_pending(self.box, "linux:ses_ALPHA", other_claude, 2.0),
+                "person": self.insert_pending(self.box, "linux:ses_ALPHA", "person:alice", 3.0),
+                "opencode": self.insert_pending(self.box, claude, "linux:ses_BETA", 4.0)}
+        self.assertEqual(self.box.claim()["id"], rows["opencode"])
+        self.assertIsNone(self.box.claim())
+        self.assertEqual(self.box.claim(claude)["id"], rows["claude"])
+        self.assertIsNone(self.box.claim(claude))
+        self.assertEqual(self.box.claim("person:")["id"], rows["person"])
+        self.assertEqual(self.box.claim("claude:")["id"], rows["other"])
+
+    def test_claim_prefix_is_literal_not_a_like_pattern(self):
+        box = self.open_box("lin_x")
+        box.enqueue("ses_ALPHA", "ses_BETA", "Bind the contract")
+        box.claim()
+        self.insert_pending(box, "linAx:ses_ALPHA", "linAx:ses_FOREIGN", 1.0)
+        self.assertIsNone(box.claim())
+
+    def test_claim_requires_a_namespace(self):
+        for match in ("", "linux", "person", b"linux:", 7):
+            with self.subTest(match=match), self.assertRaises(BridgeError):
+                self.box.claim(match)
+
     def assert_blocked_unchanged(self, box):
         before = self.records()
         with self.assertRaises(BridgeError):

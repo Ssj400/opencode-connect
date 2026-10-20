@@ -127,11 +127,21 @@ class LocalMailbox(Mailbox):
                     "queue_path": str((self.state / "mail.sqlite3").resolve()),
                     "compatible": stored == self.contract if stored is not None else not populated}
 
-    def claim(self):
+    def claim(self, match=None):
+        """Claim the oldest pending message whose target starts with `match`.
+
+        Each consumer claims only its own namespace. The default is this node's
+        OpenCode sessions, so the OpenCode relay never takes another consumer's rows.
+        `substr` rather than LIKE: `_` is a wildcard there and appears in names.
+        """
+        match = self.node + ":" if match is None else match
+        if not isinstance(match, str) or ":" not in match:
+            raise BridgeError("A claim must name an address namespace.")
         with self.db:
             self.db.execute("BEGIN IMMEDIATE")
             self._check_contract()
-            row = self.db.execute("SELECT * FROM messages WHERE state='pending' ORDER BY created LIMIT 1").fetchone()
+            row = self.db.execute("SELECT * FROM messages WHERE state='pending' AND substr(target, 1, ?) = ? "
+                                  "ORDER BY created LIMIT 1", (len(match), match)).fetchone()
             if row is None:
                 return None
             self.db.execute("UPDATE messages SET state='sending' WHERE id=?", (row["id"],))
