@@ -153,9 +153,6 @@ class LocalMailbox(Mailbox):
         source, destination = canonical(source_id, self.node), canonical(target, self.node)
         if source.startswith("person:"):
             raise BridgeError("Remote people enter the local queue only through the courier.")
-        # Other namespaces open once every consumer claims only its own targets.
-        if not (source.startswith(self.node + ":") and destination.startswith(self.node + ":")):
-            raise BridgeError("The destination is not in the configured local node.")
         if source == destination:
             raise BridgeError("Sending to the caller's own session is not supported.")
         if not isinstance(text, str) or not text.strip() or len(text) > 12000:
@@ -183,8 +180,10 @@ def deliver_local(job, adapter, *, node=None):
         if job["kind"] != "message" or job["priority"] != "queue":
             raise BridgeError("The local bridge supports normal text messages only.")
         node = local_node(node)
-        book = AddressBook({}, {node: OpenCodeAdapter.session_id})
-        target = resolve_target({}, job, addresses=book, origin_node=node)
+        book = AddressBook({}, namespaces(node))
+        target = resolve_target({}, job, addresses=book, origin_node=frozenset(namespaces(node)))
+        if target.node != node:
+            raise BridgeError("The OpenCode relay delivers only to this node's sessions.")
         if book.resolve(job["source"]) == target:
             raise BridgeError("Self delivery is not supported.")
         if "queue" not in adapter.supported_deliveries:
@@ -201,8 +200,8 @@ def deliver_local(job, adapter, *, node=None):
             raise BridgeError("The destination must be an unarchived root session.")
     except (BridgeError, KeyError, TypeError, ValueError, OSError) as exc:
         raise NotSent(str(exc)) from exc
-    return deliver_message(job, {}, lambda node: DeliveryAdapters(adapter),
-                           addresses=book, origin_node=node)
+    return deliver_message(job, {}, lambda node: DeliveryAdapters(adapter), addresses=book,
+                           origin_node=frozenset(namespaces(node)), quoted_nodes=frozenset(("person",)))
 
 
 def local_relay_once(box, adapter):

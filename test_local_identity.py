@@ -251,13 +251,21 @@ class LocalIdentityQueueTests(unittest.TestCase):
                     self.box.enqueue(source, "ses_BETA", "Forged inbound message")
         self.assertEqual(self.records(), [])
 
-    def test_claude_and_person_targets_wait_for_namespace_claims(self):
-        for source, target in (("ses_ALPHA", "claude:" + CLAUDE_SESSION),
-                               ("ses_ALPHA", "person:alice"),
-                               ("claude:" + CLAUDE_SESSION, "ses_BETA")):
-            with self.subTest(source=source, target=target), self.assertRaises(BridgeError):
-                self.box.enqueue(source, target, "Not deliverable yet")
-        self.assertEqual(self.records(), [])
+    def test_claude_sources_and_claude_or_person_targets_are_queued_canonically(self):
+        claude = "claude:" + CLAUDE_SESSION
+        cases = ((("ses_ALPHA", "claude:" + CLAUDE_SESSION.upper()), ("linux:ses_ALPHA", claude)),
+                 (("ses_ALPHA", "person:Alice"), ("linux:ses_ALPHA", "person:alice")),
+                 ((claude, "local:ses_BETA"), (claude, "linux:ses_BETA")))
+        for (source, target), expected in cases:
+            with self.subTest(source=source, target=target):
+                sent = self.box.enqueue(source, target, "Synthetic question")
+                row = self.box.db.execute("SELECT source, target, payload FROM messages WHERE id=?",
+                                          (sent["id"],)).fetchone()
+                payload = json.loads(row["payload"])
+                self.assertEqual((row["source"], row["target"]), expected)
+                self.assertEqual((payload["source_address"], payload["target_address"]), expected)
+        with self.assertRaisesRegex(BridgeError, "own session"):
+            self.box.enqueue(claude, "claude:" + CLAUDE_SESSION.upper(), "Self in another spelling")
 
     def test_node_is_pinned_when_environment_changes(self):
         with patch.dict(os.environ, {"OPENCODE_CONNECT_LOCAL_NODE": "linux"}):
