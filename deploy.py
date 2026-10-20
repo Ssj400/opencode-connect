@@ -12,18 +12,48 @@ from bridge import BridgeError
 from collab import ROOT, endpoint, settings
 
 # This is also the complete export allowlist. No recursive copying.
+# One entry per line, grouped by area, so parallel branches add files without conflicts.
+# test_public derives its module, test, and command-line lists from this tuple.
 FILES = (
-    "AGENTS.md", "README.md", "LICENSE", "SECURITY.md", ".gitignore", "routes.example.json",
-    "config.py", "core.py", "transports.py", "opencode_adapter.py",
-    "bridge.py", "collab.py", "mcp_server.py", "deploy.py", "audit_public.py",
-    "test_bridge.py", "test_collab.py", "test_core.py", "test_adapters.py", "test_chat.py", "test_public.py",
-    "docs/decisions.md", "docs/release-checklist.md", "docs/architecture.md",
-    "examples/opencode.jsonc.example", "skills/opencode-connect/SKILL.md",
-    "local_bridge.py", "local_mcp_server.py", "test_local.py", "test_local_identity.py",
+    # Project documents and examples
+    "AGENTS.md",
+    "README.md",
+    "LICENSE",
+    "SECURITY.md",
+    ".gitignore",
+    "routes.example.json",
+    "docs/decisions.md",
+    "docs/release-checklist.md",
+    "docs/architecture.md",
+    "examples/opencode.jsonc.example",
+    "skills/opencode-connect/SKILL.md",
+    # Delivery core, adapters, and the cross-machine bridge
+    "config.py",
+    "core.py",
+    "transports.py",
+    "opencode_adapter.py",
+    "bridge.py",
+    "collab.py",
+    "mcp_server.py",
+    "deploy.py",
+    "audit_public.py",
+    "test_bridge.py",
+    "test_collab.py",
+    "test_core.py",
+    "test_adapters.py",
+    "test_chat.py",
+    "test_public.py",
+    # Local messaging
+    "local_bridge.py",
+    "local_mcp_server.py",
+    "test_local.py",
+    "test_local_identity.py",
     "docs/local-messaging.md",
+    # Federated courier between people
     "courier.py",
     "test_courier.py",
     "docs/multi-person.md",
+    # Claude Code harness
 )
 
 

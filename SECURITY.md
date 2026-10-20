@@ -49,9 +49,11 @@ controls the bridge. Do not expose this RPC or MCP server as a public or multi-u
 ## Data excluded from publication
 
 `routes.json`, `.state/`, mailboxes, sockets, logs, backups, tokens, private identities,
-operational IPs, SSH fingerprints, real session/message IDs, and execution reports.
+operational IPv4/IPv6 addresses, VPN host names, SSH fingerprints, real session/message
+IDs, Claude Code session UUIDs, and execution reports.
 `audit_public.py` uses an allowlist and heuristics; it does not replace human review
 or a secret scanner. Do not treat it as certification that no private data exists.
+Names it cannot recognize belong in its private deny-list, `OPENCODE_CONNECT_AUDIT_TERMS`.
 
 ## Incident handling
 

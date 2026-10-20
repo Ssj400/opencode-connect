@@ -245,9 +245,14 @@ class CollabTests(unittest.TestCase):
 
     @unittest.skipUnless(Path("/proc/self/cmdline").exists(), "process arguments require /proc")
     def test_relay_status_recognizes_a_live_relay_process(self):
-        process = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)", "collab.py", "relay"])
+        # Popen can return before the kernel publishes the new command line; wait for
+        # the child to run so /proc/PID/cmdline is never read while still empty.
+        process = subprocess.Popen([sys.executable, "-c", "print('ready', flush=True); import time; time.sleep(30)",
+                                    "collab.py", "relay"], stdout=subprocess.PIPE, text=True)
+        self.addCleanup(process.stdout.close)
         self.addCleanup(process.wait)
         self.addCleanup(process.kill)
+        self.assertEqual(process.stdout.readline(), "ready\n")
         (self.root / ".state" / "relay.pid").write_text(str(process.pid))
         self.assertEqual(collab.relay_status(self.root), {"running": True, "pid": process.pid, "stale": False})
 
