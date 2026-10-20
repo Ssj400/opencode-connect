@@ -54,6 +54,8 @@ FILES = (
     "claude_hook.py",
     "claude_mcp_server.py",
     "test_claude.py",
+    "examples/claude-settings.local.json.example",
+    "docs/claude-code.md",
 )
 
 

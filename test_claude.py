@@ -5,6 +5,7 @@ import io
 import json
 import os
 from pathlib import Path
+import re
 import sqlite3
 import stat
 import subprocess
@@ -258,6 +259,25 @@ class ClaudeServerTests(ClaudeTestCase):
         self.assertEqual((received["id"], received["state"], received["remaining"]), (sent["id"], "failed", 0))
         self.assertNotIn("message", received)
         self.assertEqual(box.get(sent["id"])["state"], "failed")
+
+    def test_example_settings_wire_each_hook_to_its_event(self):
+        settings = json.loads((ROOT / "examples/claude-settings.local.json.example").read_text())
+        hooks = settings["hooks"]
+        wired = {(event, hook["command"].split()[-1]): hook
+                 for event, groups in hooks.items() for group in groups for hook in group["hooks"]}
+        self.assertEqual(set(wired), {("PreToolUse", "pre-tool"), ("UserPromptSubmit", "prompt"),
+                                      ("Stop", "stop"), ("Stop", "wake")})
+        for (event, subcommand), hook in wired.items():
+            with self.subTest(subcommand=subcommand):
+                self.assertTrue(hook["command"].endswith(f"/claude_hook.py {subcommand}"))
+                self.assertEqual(hook.get("asyncRewake", False), subcommand == "wake")
+        self.assertIsInstance(wired[("Stop", "wake")]["timeout"], int)
+        (matcher,) = [group["matcher"] for group in hooks["PreToolUse"]]
+        for tool in claude_mcp_server.TOOLS:
+            self.assertTrue(re.fullmatch(matcher, "mcp__opencode_connect__" + tool["name"]))
+        self.assertFalse(re.fullmatch(matcher, "mcp__another_server__send"))
+        self.assertLessEqual({"Read(~/.config/opencode-connect/**)", "Read(~/.local/state/opencode-connect/**)"},
+                             set(settings["permissions"]["deny"]))
 
     def test_protocol_lists_the_local_tools_and_receive(self):
         tools = claude_mcp_server.handle({"id": 1, "method": "tools/list"})["result"]["tools"]

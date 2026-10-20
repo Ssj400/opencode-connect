@@ -1,0 +1,36 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "mcp__opencode_connect__.*",
+        "hooks": [
+          {"type": "command", "command": "python3 /srv/opencode-connect/claude_hook.py pre-tool"}
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {"type": "command", "command": "python3 /srv/opencode-connect/claude_hook.py prompt"}
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {"type": "command", "command": "python3 /srv/opencode-connect/claude_hook.py stop"},
+          {"type": "command", "command": "python3 /srv/opencode-connect/claude_hook.py wake",
+           "asyncRewake": true, "timeout": 86400}
+        ]
+      }
+    ]
+  },
+  "permissions": {
+    "deny": [
+      "Bash(*courier.py*)",
+      "Bash(*local_bridge.py*)",
+      "Read(~/.config/opencode-connect/**)",
+      "Read(~/.local/state/opencode-connect/**)"
+    ]
+  }
+}

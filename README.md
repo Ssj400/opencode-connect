@@ -16,6 +16,9 @@ every question manually. Each person retains control of their environment. This
 prototype provides messaging; bilateral consent, information-sharing policies,
 and correlated questions and answers remain future work.
 
+Claude Code sessions can send and receive on the local queue through an opt-in MCP
+server and hooks; see [Claude Code sessions](docs/claude-code.md).
+
 Repository: **https://github.com/Ssj400/opencode-connect**.
 An experimental prototype for review, not a stable release or a secure multi-user
 service. Released under the [MIT License](LICENSE). A private security reporting
