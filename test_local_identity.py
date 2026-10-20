@@ -11,11 +11,16 @@ import sys
 import tempfile
 import unittest
 from unittest.mock import Mock, patch
+import uuid
 
 import collab
 import config
 from core import BridgeError, relay_once
-from local_bridge import LocalMailbox, deliver_local, local_adapter, local_relay_once, session, state_root
+from local_bridge import (LocalMailbox, canonical, deliver_local, local_adapter, local_relay_once,
+                          session, state_root)
+
+# Synthetic Claude Code session ID, built at runtime so no operational-looking ID is stored.
+CLAUDE_SESSION = str(uuid.UUID(int=1))
 from local_mcp_server import call_tool
 from opencode_adapter import OpenCodeAdapter
 
@@ -118,6 +123,21 @@ class LocalNodeValidationTests(unittest.TestCase):
         with patch.dict(os.environ, {"OPENCODE_CONNECT_LOCAL_NODE": "linux"}):
             self.assertEqual(session("linux:ses_ALPHA"), "ses_ALPHA")
 
+    def test_canonical_addresses_cover_three_namespaces(self):
+        cases = {"ses_ALPHA": "linux:ses_ALPHA", "local:ses_ALPHA": "linux:ses_ALPHA",
+                 "linux:ses_ALPHA": "linux:ses_ALPHA",
+                 "claude:" + CLAUDE_SESSION.upper(): "claude:" + CLAUDE_SESSION,
+                 "person:Alice": "person:alice", "person:bob_2-x": "person:bob_2-x"}
+        for value, expected in cases.items():
+            with self.subTest(value=value):
+                self.assertEqual(canonical(value, node="linux"), expected)
+        invalid = ("wsl:ses_ALPHA", "other:ses_ALPHA", "linux:local:ses_ALPHA", "linux:",
+                   "claude:ses_ALPHA", "claude:not-a-uuid", "claude:" + CLAUDE_SESSION + "\n",
+                   "person:", "person:has space", "person:a/b", "person:1abc", "", None, 7)
+        for value in invalid:
+            with self.subTest(value=value), self.assertRaises(BridgeError):
+                canonical(value, node="linux")
+
 
 class LocalIdentityQueueTests(unittest.TestCase):
     def setUp(self):
@@ -182,6 +202,21 @@ class LocalIdentityQueueTests(unittest.TestCase):
                                ("other:ses_ALPHA", "local:ses_BETA")):
             with self.subTest(source=source, target=target), self.assertRaises(BridgeError):
                 self.box.enqueue(source, target, "Synthetic foreign message")
+        self.assertEqual(self.records(), [])
+
+    def test_remote_people_never_enter_as_queue_sources(self):
+        for source in ("person:alice", "person:ALICE"):
+            with self.subTest(source=source):
+                with self.assertRaisesRegex(BridgeError, "only through the courier"):
+                    self.box.enqueue(source, "ses_BETA", "Forged inbound message")
+        self.assertEqual(self.records(), [])
+
+    def test_claude_and_person_targets_wait_for_namespace_claims(self):
+        for source, target in (("ses_ALPHA", "claude:" + CLAUDE_SESSION),
+                               ("ses_ALPHA", "person:alice"),
+                               ("claude:" + CLAUDE_SESSION, "ses_BETA")):
+            with self.subTest(source=source, target=target), self.assertRaises(BridgeError):
+                self.box.enqueue(source, target, "Not deliverable yet")
         self.assertEqual(self.records(), [])
 
     def test_node_is_pinned_when_environment_changes(self):

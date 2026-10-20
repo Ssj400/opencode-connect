@@ -6,6 +6,7 @@ import fcntl
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import sqlite3
 import sys
@@ -39,6 +40,46 @@ def session(value, node=None):
         if prefix not in ("local", node):
             raise BridgeError("The destination is not in the configured local node.")
     return OpenCodeAdapter.session_id(value)
+
+
+CLAUDE_SESSION_ID = re.compile(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}")
+PERSON_NAME = re.compile(r"[a-z][a-z0-9_-]{0,63}")
+
+
+def claude_session_id(value):
+    """Claude Code session IDs are UUIDs, compared in lowercase."""
+    if not isinstance(value, str) or not CLAUDE_SESSION_ID.fullmatch(value.lower()):
+        raise BridgeError("Invalid Claude Code session ID.")
+    return value.lower()
+
+
+def person_name(value):
+    if not isinstance(value, str) or not PERSON_NAME.fullmatch(value.lower()):
+        raise BridgeError("Invalid person name.")
+    return value.lower()
+
+
+def namespaces(node=None):
+    """Address namespaces of one local queue: this node's OpenCode sessions,
+    Claude Code sessions, and remote people. Any other prefix is rejected."""
+    return {local_node(node): OpenCodeAdapter.session_id,
+            "claude": claude_session_id, "person": person_name}
+
+
+def canonical(value, node=None):
+    """Canonical queue address; a bare ID or `local:` means this node's OpenCode session."""
+    node = local_node(node)
+    if not isinstance(value, str):
+        raise BridgeError("Invalid address.")
+    prefix, separator, identifier = value.partition(":")
+    if not separator:
+        prefix, identifier = node, value
+    elif prefix == "local":
+        prefix = node
+    validate = namespaces(node).get(prefix)
+    if validate is None:
+        raise BridgeError("The destination is not in the configured local node.")
+    return f"{prefix}:{validate(identifier)}"
 
 
 class LocalMailbox(Mailbox):
@@ -99,13 +140,18 @@ class LocalMailbox(Mailbox):
         return result
 
     def enqueue(self, source_id, target, text):
-        source_id, target_id = session(source_id, self.node), session(target, self.node)
-        if source_id == target_id:
+        source, destination = canonical(source_id, self.node), canonical(target, self.node)
+        if source.startswith("person:"):
+            raise BridgeError("Remote people enter the local queue only through the courier.")
+        # Other namespaces open once every consumer claims only its own targets.
+        if not (source.startswith(self.node + ":") and destination.startswith(self.node + ":")):
+            raise BridgeError("The destination is not in the configured local node.")
+        if source == destination:
             raise BridgeError("Sending to the caller's own session is not supported.")
         if not isinstance(text, str) or not text.strip() or len(text) > 12000:
             raise BridgeError("Messages must contain between 1 and 12000 characters.")
-        source, destination = self.node + ":" + source_id, self.node + ":" + target_id
-        payload = {"text": text, "source_id": source_id, "target_id": target_id,
+        payload = {"text": text, "source_id": source.split(":", 1)[1],
+                   "target_id": destination.split(":", 1)[1],
                    "source_address": source, "target_address": destination}
         message_id = "msg_" + uuid.uuid4().hex
         with self.db:
