@@ -3,14 +3,14 @@
 ## Decisiones pendientes
 
 - [x] Owner y repositorio público: https://github.com/Ssj400/opencode-connect.
-- [ ] Elegir y aprobar una licencia; añadir su archivo solo después.
+- [x] MIT aprobada por el propietario; archivo `LICENSE` incluido en la exportación.
 - [ ] Definir canal privado de reportes de seguridad.
 - [x] Publicación experimental del contenido generalizado autorizada por el propietario.
 
 ## Exportación y pruebas locales
 
 - [x] Exportar solo `deploy.FILES`, nunca la carpeta personal completa.
-- [x] Ejecutar `python3 -B -m unittest discover -v` (49 pruebas) y `python3 -B audit_public.py`.
+- [x] Ejecutar `python3 -B -m unittest discover -v` (50 pruebas) y `python3 -B audit_public.py`.
 - [x] Revisar manualmente los archivos exportados además de la auditoría heurística.
 - [x] Revisar el conjunto exacto destinado a Git: no config real, estado, logs, backups,
       artefactos de ejecución, enlaces a carpetas privadas ni historial personal.
@@ -35,4 +35,4 @@ No ejecutar contra bandejas o sesiones reales de trabajo.
 
 Esta checklist no autoriza por sí sola operaciones Git. La publicación inicial
 experimental fue solicitada expresamente por el propietario; no implica que los
-pendientes de licencia, seguridad o integración estén resueltos.
+pendientes de seguridad o integración estén resueltos.

@@ -27,8 +27,9 @@
    Una URL de repositorio no equivale por sí sola a un catálogo de skills OpenCode V2.
 10. **Publicación experimental autorizada.** Repositorio público del propietario
     autenticado, `Ssj400/opencode-connect`, por petición expresa. Commits con la
-    identidad Git del propietario, sin coautoría de agentes. Licencia y canal privado
-    de seguridad siguen pendientes; no se concede una licencia por inferencia.
+    identidad Git del propietario, sin coautoría de agentes. El propietario confirmó
+    la titularidad del código y autorizó expresamente MIT, con copyright a su nombre.
+    El canal privado de seguridad sigue pendiente.
 
 ## Fuera de alcance
 

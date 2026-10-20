@@ -27,6 +27,13 @@ class PublicTests(unittest.TestCase):
     def test_export_has_no_private_data_or_extra_files(self):
         self.assertEqual(audit_public.audit(ROOT), [])
 
+    def test_mit_license_is_included_in_export(self):
+        self.assertIn("LICENSE", deploy.FILES)
+        license_text = (ROOT / "LICENSE").read_text()
+        self.assertTrue(license_text.startswith("MIT License\n"))
+        self.assertIn("Copyright (c) 2026 Ssj400", license_text)
+        self.assertIn('THE SOFTWARE IS PROVIDED "AS IS"', license_text)
+
     def test_root_git_metadata_is_not_exported_content(self):
         with TemporaryDirectory(prefix="audit-repo-") as folder:
             root = Path(folder)
@@ -68,7 +75,7 @@ class PublicTests(unittest.TestCase):
     def test_skill_links_and_metadata(self):
         skill = ROOT / "skills/opencode-connect/SKILL.md"
         text = skill.read_text()
-        self.assertTrue(text.startswith("---\nname: opencode-connect\ndescription:"))
+        self.assertTrue(text.startswith("---\nname: opencode-connect\nlicense: MIT\ndescription:"))
         self.assertIn("Coordinate remote OpenCode agents", text)
         self.assertIn("Coordinar agentes", text)
         for relative in ("../../README.md", "../../SECURITY.md"):

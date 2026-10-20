@@ -1,5 +1,6 @@
 ---
 name: opencode-connect
+license: MIT
 description: >-
   Coordinar agentes y sesiones OpenCode remotas entre dos equipos con OpenCode Connect;
   usar cuando pidan «dile al otro agente», enviar un encargo, queue/steer, transferir

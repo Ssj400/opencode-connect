@@ -1,127 +1,129 @@
 # OpenCode Connect
 
-Mensajes y archivos explícitos entre sesiones OpenCode V2 registradas en dos equipos.
-**Linux → SSH de Windows → WSL**; el relay Linux también recoge mensajes de WSL
-hacia Linux. No requiere SSH entrante en Linux. No es un servicio universal ni un
-sistema de debate automático entre agentes.
+Explicit messaging and file transfers between registered OpenCode V2 sessions on two machines.
+**Linux → Windows SSH → WSL**; the Linux relay also collects messages from WSL
+and delivers them to Linux. No inbound SSH server is required on Linux. This is
+not a universal remote service or an automatic agent conversation loop.
 
-La visión de producto es que **dos personas trabajen con sus propios asistentes**
-y estos puedan consultarse sobre el trabajo compartido, sin obligar a las personas
-a retransmitir cada pregunta. Cada persona conserva control de su entorno. El
-prototipo actual aporta mensajería; consentimiento bilateral, políticas de datos
-compartibles y preguntas/respuestas correlacionadas siguen pendientes de diseño.
+The product vision is for **two people to work with their own assistants**, letting
+those assistants consult each other about shared work without making people relay
+every question manually. Each person retains control of their environment. This
+prototype provides messaging; bilateral consent, information-sharing policies,
+and correlated questions and answers remain future work.
 
-Repositorio: **https://github.com/Ssj400/opencode-connect**.
-Prototipo experimental para revisión; no es una versión estable ni un servicio
-multiusuario seguro. Licencia y canal privado de seguridad pendientes. No hay
-licencia elegida; no inferir permisos de distribución. [Checklist](docs/release-checklist.md).
+Repository: **https://github.com/Ssj400/opencode-connect**.
+An experimental prototype for review, not a stable release or a secure multi-user
+service. Released under the [MIT License](LICENSE). A private security reporting
+channel remains to be defined. See the [release checklist](docs/release-checklist.md).
 
-## Requisitos y límites
+## Requirements and limitations
 
-- Python 3.10+ en Linux y WSL; solo biblioteca estándar, sin `pip install`.
-- OpenCode V2 instalado/autenticado localmente en ambos lados; API mediante `opencode api`.
-- Cliente OpenSSH en Linux, OpenSSH Server de Windows configurado por el usuario,
-  WSL y `python3` accesibles mediante `wsl.exe`.
-- Cuentas/equipos confiables y rutas propias no escribibles por terceros.
-- No abrir API a LAN/Internet, desactivar firewall ni relajar verificación de host.
-- La API local no es una API de modelos adicional, pero los mensajes entregados pueden
-  generar respuestas y consumir cuotas/coste del proveedor ya configurado.
-- Pruebas unitarias locales disponibles; **integración real de esta edición aún no comprobada**.
-  La documentación de versiones de otras instalaciones no certifica esta exportación.
+- Python 3.10+ on Linux and WSL; standard library only, no `pip install` required.
+- OpenCode V2 installed and authenticated locally on both sides, accessed through `opencode api`.
+- An OpenSSH client on Linux, a user-configured Windows OpenSSH Server, and
+  WSL with `python3` accessible through `wsl.exe`.
+- Trusted machines and system accounts, with installation paths not writable by others.
+- Do not expose the OpenCode API to a LAN or the internet, disable firewalls, or weaken host verification.
+- The local API is not an additional paid model API. However, delivered messages
+  can trigger model responses and consume your existing provider's quota or budget.
+- Local unit tests are available; **live integration of this public edition has not been verified**.
+  Results from a separate installation do not certify this export.
 
-## Preparación explícita
+## Setup
 
-Trabaja desde una copia independiente de esta carpeta en Linux. Conserva la misma
-estructura de scripts, docs y skill. No copies configuración/estado de otra persona.
-Todos los comandos siguientes se ejecutan desde esa copia salvo indicación contraria.
+Use an independent checkout on Linux. Keep the scripts, documentation, and skill
+together. Do not copy another person's configuration or runtime state.
+Run the following commands from the checkout unless stated otherwise.
 
 ```bash
 git clone https://github.com/Ssj400/opencode-connect.git
 cd opencode-connect
 ```
 
-1. Ejecuta pruebas/auditoría antes de crear configuración operativa:
+1. Run the tests and audit before creating operational configuration:
 
    ```bash
    python3 -B -m unittest discover -v
    python3 -B audit_public.py
    ```
 
-   Son locales, sin SSH, API ni modelos. Los temporales usan `tempfile`; puedes indicar
-   un `TMPDIR` propio. La auditoría exige un árbol exportable, no una instalación con
-   `routes.json`/estado; no borra nada. Tras configurar, audita una exportación limpia.
+   These checks run locally without SSH, API calls, or models. Temporary files use
+   `tempfile`; you can set `TMPDIR`. The audit expects an exportable source tree,
+   not an installation containing `routes.json` or runtime state. It deletes nothing.
+   After configuration, run the audit against a clean export instead.
 
-2. Crea configuración privada sin sobrescribir una existente:
+2. Create private configuration without overwriting an existing file:
 
    ```bash
    umask 077
    test ! -e routes.json && cp routes.example.json routes.json
    ```
 
-   Edita `routes.json`: `side: linux`, host Windows, usuario SSH (admite espacios/Unicode),
-   usuario WSL, ruta absoluta del binario OpenCode en WSL y carpeta remota propia.
-   Resuelve allí el binario con `command -v opencode`; no supongas una ruta.
-   `192.0.2.10` pertenece a RFC5737 y es ficticia, no un host operativo.
-   Las rutas del ejemplo son ficticias, no se crean sin ejecutar deployment explícito.
+   Edit `routes.json`: set `side` to `linux`, then provide the Windows host, SSH
+   username (spaces and Unicode are supported), WSL username, absolute path to the
+   OpenCode executable in WSL, and a remote installation directory you control.
+   Find the executable in WSL with `command -v opencode`; do not assume its location.
+   `192.0.2.10` is an RFC5737 documentation address, not a working host. Example
+   directories are placeholders; they are only created by an explicit deployment.
 
-   Registra en `peers` únicamente sesiones elegidas por el usuario, con su `side`
-   y `sessionID` exactos. No leas conversaciones para descubrirlas ni registres todas.
-   Hay al menos una sesión por equipo; los aliases pueden ser diferentes de linux/wsl.
-   Los IDs `ses_REPLACE_*` fallan intencionadamente hasta sustituirlos.
-   La configuración no admite campos desconocidos ni rutas relativas.
-   Los scripts solo leen `routes.json` junto a ellos: no buscan en carpetas superiores.
+   Register only user-selected sessions in `peers`, using their exact `side` and
+   `sessionID`. Do not read conversations to discover sessions or register every
+   session automatically. At least one session per machine is required; aliases
+   do not have to be named `linux` and `wsl`. The `ses_REPLACE_*` placeholders are
+   intentionally rejected until replaced. Unknown fields and relative paths are
+   rejected. Scripts read only the adjacent `routes.json`, not parent directories.
 
-3. Tras verificar de forma independiente la identidad del host, autentica SSH desde
-   tu terminal. La contraseña/PIN no se entrega al asistente ni se guarda en archivos:
+3. Verify the host's identity independently, then authenticate from your terminal.
+   Never give the assistant your password or PIN, or save them in project files:
 
    ```bash
    python3 bridge.py connect
    python3 bridge.py check
    ```
 
-   `connect` abre un ControlMaster con 10 minutos de persistencia sin uso. Su socket
-   vive en un subdirectorio 0700 de `XDG_RUNTIME_DIR` o de la caché del usuario
-   (`XDG_CACHE_HOME`, por defecto `~/.cache`). Un directorio inseguro o una ruta de
-   socket demasiado larga se rechaza: configura un runtime privado más corto, sin
-   debilitar permisos. `check` hace GET pequeños y no genera respuestas; la CLI
-   OpenCode puede descubrir/iniciar su servicio local.
+   `connect` opens an SSH ControlMaster that persists for 10 minutes while idle.
+   Its socket lives in a private 0700 subdirectory of `XDG_RUNTIME_DIR` or the user's
+   cache (`XDG_CACHE_HOME`, defaulting to `~/.cache`). Insecure directories and
+   excessively long socket paths are rejected. Use a shorter private runtime path
+   rather than weakening permissions. `check` makes small GET requests without
+   generating model responses; the OpenCode CLI may discover or start its local service.
 
-4. Instala los archivos en la ruta WSL configurada **solo si lo autorizas**:
+4. Deploy files to the configured WSL directory **only with your authorization**:
 
    ```bash
    python3 deploy.py --install-config
    ```
 
-   Copia la lista cerrada de archivos propios y, con este flag, `routes.json` adaptando
-   `side` a `wsl`. No copia estado/bandejas, credenciales ni configuración MCP.
-   No sobrescribe archivos remotos diferentes salvo que coincidan con el hash del
-   último despliegue administrado. Una colisión exige revisión, no borrar el manifiesto.
-   Para actualizar solo código/documentación después:
+   This copies an explicit allowlist of project files. The flag also copies
+   `routes.json`, changing `side` to `wsl`. It does not copy queues, runtime state,
+   credentials, or MCP configuration. Different remote files are only replaced if
+   they match the previous managed deployment's hash. Review conflicts instead of
+   deleting the deployment manifest. For subsequent code and documentation updates:
 
    ```bash
    python3 deploy.py
    ```
 
-   También puedes instalar una exportación limpia manualmente y crear la configuración
-   en WSL con `side: wsl`, mismos aliases/IDs y datos SSH. Edita ambos lados coherentemente.
-   Cada equipo conserva su propia `.state/`, `outgoing/` e `inbox/`.
+   Alternatively, install a clean export manually and create WSL configuration with
+   `side: wsl` and matching aliases, session IDs, and SSH settings. Keep both sides
+   consistent. Each machine retains its own `.state/`, `outgoing/`, and `inbox/`.
 
-5. Configura MCP explícitamente en cada proyecto OpenCode que vaya a usar el puente.
-   Desde la carpeta de ese proyecto, ajusta la ruta absoluta en este comando de ejemplo:
+5. Explicitly configure MCP in each OpenCode project that will use the bridge.
+   From that project's directory, replace the absolute path in this example:
 
    ```bash
    opencode mcp add laptop_bridge -- python3 /srv/opencode-connect/mcp_server.py
    opencode mcp list
    ```
 
-   `/srv/opencode-connect` es ficticia: usa la ruta real local en cada equipo. No ejecutes
-   el ejemplo literalmente sin adaptarlo. Consulta también
-   [ejemplo JSONC](examples/opencode.jsonc.example): fusiona solo la entrada necesaria,
-   preservando el resto. Protocolo clásico `legacy`; no requiere protocolo MCP nuevo.
-   Si ya existe un MCP operativo, coordina el reemplazo; no lo pises accidentalmente.
-   Usa `/mcps` para reconectar y comprueba `connected` antes de declarar éxito.
+   `/srv/opencode-connect` is a placeholder: use the actual local path on each machine.
+   Do not run the example unchanged. See the [JSONC example](examples/opencode.jsonc.example)
+   and merge only the required entry, preserving other configuration. The server
+   uses the classic `legacy` MCP protocol. Coordinate any replacement of an existing
+   MCP server rather than overwriting it accidentally. Use `/mcps` to reconnect and
+   verify `connected` before reporting success.
 
-6. Revisa aliases y colas antes de arrancar el relay:
+6. Review aliases and queues before starting the relay:
 
    ```bash
    python3 collab.py peers
@@ -129,77 +131,86 @@ cd opencode-connect
    python3 collab.py relay
    ```
 
-   Mantén el relay en primer plano en Linux. Ctrl+C detiene el relay, **no los agentes**.
-   No hay daemon ni autoarranque. `relay --once` también entrega mensajes pendientes,
-   no es un health check inocuo. WSL no ejecuta relay.
+   Keep the relay running in the foreground on Linux. Ctrl+C stops the relay,
+   **not the agents**. There is no daemon or automatic startup. `relay --once`
+   also delivers pending messages: it is not a harmless health check. WSL does not run a relay.
 
-## Uso autorizado
+## Authorized use
 
-MCP ofrece `peers`, `status`, `send` y `send_file`. La sesión llamadora debe estar
-registrada; OpenCode aporta su ID en metadata. No es argumento que el modelo deba inventar.
-La skill explica el flujo: [skills/opencode-connect/SKILL.md](skills/opencode-connect/SKILL.md).
+MCP provides `peers`, `status`, `send`, and `send_file`. The calling session must be
+registered; OpenCode supplies its ID through request metadata. It is not an
+argument for the model to invent. See the [skill](skills/opencode-connect/SKILL.md)
+for the operating workflow.
 
-CLI equivalente, con aliases de ejemplo:
+Equivalent CLI commands, using example aliases:
 
 ```bash
-python3 collab.py send --source linux --to wsl --text 'Encargo explícitamente autorizado'
-python3 collab.py send --source linux --to wsl --text 'Bloqueo urgente autorizado' --urgent
+python3 collab.py send --source linux --to wsl --text 'Explicitly authorized task'
+python3 collab.py send --source linux --to wsl --text 'Authorized urgent blocker' --urgent
 python3 collab.py status
 ```
 
-En WSL usa `--source wsl --to linux`. Normal = `queue`; `--urgent` = `steer`, solo
-urgencias explícitas. No garantiza interrumpir inmediatamente herramientas bloqueadas.
-No reenviar respuestas ni contestar acuses automáticamente. No se amplían permisos
-ni se evade modo Plan. `cancel-pending ID` cancela solo un envío local aún pendiente.
+On WSL, use `--source wsl --to linux`. Normal delivery uses `queue`; `--urgent`
+uses `steer` for explicitly authorized urgent notices. It does not guarantee
+immediate interruption of blocked tools. Do not automatically forward responses
+or reply to acknowledgments. Existing permissions and Plan mode remain in force.
+`cancel-pending ID` cancels only a local message that has not been sent.
 
-Para archivos: prepara únicamente un archivo previamente autorizado en `outgoing/`
-(crea esa carpeta con `mkdir -m 700 outgoing` si falta), sin enlaces, nombre simple,
-máximo 1 MiB. No copies secretos. Envía con:
-
-```bash
-python3 collab.py send --source linux --to wsl --text 'Archivo autorizado' --file example.txt
-```
-
-Destino `inbox/<message-id>/<filename>` con SHA256. No sobrescribe ni ejecuta.
-`example.txt` debe ser el archivo aprobado, no una selección automática.
-
-Administración opcional, solo con autorización explícita:
+For files, stage only an approved file in `outgoing/` (create the directory with
+`mkdir -m 700 outgoing` if needed). Use a simple filename, no symbolic links, and
+a maximum size of 1 MiB. Do not copy secrets. Send it with:
 
 ```bash
-python3 collab.py create-session --side wsl --title 'Nueva colaboración'
+python3 collab.py send --source linux --to wsl --text 'Approved file' --file example.txt
 ```
 
-Crea sin generar respuesta, con permisos `ask`; no registra aliases automáticamente
-ni cambia permisos de sesiones existentes. No está expuesto por MCP.
+Files arrive at `inbox/<message-id>/<filename>` with SHA256 verification.
+They are neither overwritten nor executed. `example.txt` must be the approved
+file, not an automatically selected one.
 
-## Estados y diagnóstico
+Optional administration, only with explicit authorization:
 
-`pending → sending → delivered | uncertain`. `delivered` significa aceptación de la
-API, no trabajo terminado. Si el proceso muere en `sending`, ese envío no se reclama
-al reiniciar. `uncertain` tampoco se reenvía. Revisa manualmente con el usuario;
-conserva ID/estado. Nunca borres SQLite para “desatascar” la cola.
+```bash
+python3 collab.py create-session --side wsl --title 'New collaboration'
+```
 
-- MCP no conectado: comprobar ruta Python/script, configuración del proyecto y `/mcps`.
-- Sesión no registrada: confirmar ID actual y actualizar ambos archivos de rutas.
-- Pending: comprobar SSH y relay; no arrancarlo sin considerar qué tareas entregará.
-- SSH caducado: autenticación en terminal mediante `connect`, no enviar contraseñas.
-- Ruta cambiada desde enqueue: revisar antes de cualquier nuevo envío.
-- Fallo parcial de deploy: revisar hashes y cambios remotos, preservar trabajo ajeno.
+This creates a session without generating a response, with `ask` permissions.
+It neither registers an alias automatically nor changes existing sessions'
+permissions. Session creation is not exposed through MCP.
 
-## Skill local y repositorio
+## Delivery states and troubleshooting
 
-No se instala automáticamente. Para habilitar desde un checkout completo, añade
-explícitamente a la configuración del proyecto una entrada en el array `skills` con
-la ruta absoluta real del directorio `skills` del checkout, preservando otras entradas.
-Por ejemplo `"skills": ["/srv/opencode-connect/skills"]` (ruta ficticia a adaptar).
-La skill usa referencias relativas al checkout; no copies solo el archivo sin sus docs.
-Repositorio oficial: https://github.com/Ssj400/opencode-connect.
-Una futura instalación HTTP necesita un catálogo `index.json`, no solo la URL del repo.
+`pending → sending → delivered | uncertain`. `delivered` means API acceptance,
+not task completion. If a process dies in `sending`, that message is not claimed
+again after restart. `uncertain` messages are not retried either. Review them
+manually with the user, preserving IDs and state. Never delete SQLite to clear a queue.
 
-## Mantenimiento
+- MCP disconnected: check Python/script paths, project configuration, and `/mcps`.
+- Unregistered session: confirm the current ID and update both configuration files.
+- Pending delivery: check SSH and the relay; consider which tasks starting it would deliver.
+- Expired SSH connection: authenticate in your terminal using `connect`; do not send passwords.
+- A route changed after enqueue: review it before attempting any new delivery.
+- Partial deployment failure: review hashes and remote changes, preserving others' work.
 
-[Seguridad](SECURITY.md) · [Decisiones](docs/decisions.md) ·
-[Checklist de publicación e integración](docs/release-checklist.md).
-Fuentes de referencia OpenCode V2: `https://opencode.ai/v2/docs/mcp-servers`,
-`https://opencode.ai/v2/docs/api` y `https://opencode.ai/v2/docs/skills`.
-No es necesario acceder a ellas durante las pruebas locales.
+## Local skill and repository
+
+The skill is not installed automatically. To enable it from a complete checkout,
+explicitly add the absolute path to its `skills` directory to the project's
+`skills` configuration array, preserving existing entries. For example:
+`"skills": ["/srv/opencode-connect/skills"]` (replace the placeholder path).
+The skill uses relative links into the checkout; do not copy it without its docs.
+Official repository: https://github.com/Ssj400/opencode-connect.
+A future HTTP skill source requires an `index.json` catalog, not just a GitHub URL.
+
+## Maintenance
+
+[Security](SECURITY.md) · [Architecture decisions](docs/decisions.md) ·
+[Release and integration checklist](docs/release-checklist.md).
+OpenCode V2 references: `https://opencode.ai/v2/docs/mcp-servers`,
+`https://opencode.ai/v2/docs/api`, and `https://opencode.ai/v2/docs/skills`.
+Local tests do not need access to these sites. Supporting documentation and runtime
+messages are currently primarily in Spanish.
+
+## License
+
+[MIT](LICENSE) — Copyright (c) 2026 Ssj400.
