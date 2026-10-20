@@ -258,6 +258,29 @@ class LocalMcpTests(unittest.TestCase):
     def params(self, name, **args):
         return {"name": name, "arguments": args, "_meta": {"ai.opencode/sessionID": "ses_SOURCE"}}
 
+    def test_injected_identity_gives_another_harness_the_same_tools(self):
+        session = str(uuid.UUID(int=1))
+        claude = lambda params, node: "claude:" + session.upper()
+        self.assertEqual(call_tool({"name": "whoami", "arguments": {}}, identity=claude),
+                         {"address": "claude:" + session})
+        with tempfile.TemporaryDirectory() as root:
+            sent = call_tool({"name": "send", "arguments": {"to": "ses_TARGET", "text": "From Claude"}},
+                             root=root, identity=claude)
+            box = LocalMailbox(Path(root))
+            try:
+                job = box.claim()
+            finally:
+                box.db.close()
+        self.assertEqual((job["id"], job["source"]), (sent["id"], "claude:" + session))
+        adapter = Mock()
+        call_tool({"name": "find_sessions", "arguments": {"query": "API"}}, adapter=adapter, identity=claude)
+        adapter.find_sessions.assert_called_once_with("API", cursor=None, exclude=None)
+
+    def test_identity_providers_cannot_claim_other_people_or_nodes(self):
+        for address in ("person:alice", "wsl:ses_REMOTE", "not an address"):
+            with self.subTest(address=address), self.assertRaises(BridgeError):
+                call_tool({"name": "whoami", "arguments": {}}, identity=lambda params, node, value=address: value)
+
     def test_identity_uses_metadata_without_configuration(self):
         self.assertEqual(call_tool(self.params("whoami")), {"address": "local:ses_SOURCE"})
         with self.assertRaises(BridgeError):
