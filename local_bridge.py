@@ -341,7 +341,11 @@ class LocalMailbox(Mailbox):
         row = self.db.execute("SELECT state FROM messages WHERE id=? AND source=?", (message_id, source)).fetchone()
         return row["state"] if row else None
 
-    def enqueue(self, source_id, target, text):
+    def enqueue(self, source_id, target, text, reply_to=None):
+        """Queue a local caller's message. `reply_to`, only when answering a remote person,
+        names their message delivered to this caller, so the courier can tell them which
+        of their sessions the reply belongs to.
+        """
         source, destination = canonical(source_id, self.node), canonical(target, self.node)
         if source.startswith("person:"):
             raise BridgeError("Remote people enter the local queue only through the courier.")
@@ -349,11 +353,21 @@ class LocalMailbox(Mailbox):
             raise BridgeError("Sending to the caller's own session is not supported.")
         if not isinstance(text, str) or not text.strip() or len(text) > 12000:
             raise BridgeError("Messages must contain between 1 and 12000 characters.")
+        if reply_to is not None and not destination.startswith("person:"):
+            raise BridgeError("reply_to applies only to a reply to a remote person.")
+        if reply_to is not None and (not isinstance(reply_to, str) or not MESSAGE_ID.fullmatch(reply_to)):
+            raise BridgeError("reply_to must be a message ID.")
         payload = {"text": text, "source_id": source.split(":", 1)[1],
                    "target_id": destination.split(":", 1)[1],
                    "source_address": source, "target_address": destination}
+        if reply_to is not None:
+            payload["reply_to"] = reply_to
         message_id = "msg_" + uuid.uuid4().hex
         with self._write():
+            if reply_to is not None and not self.db.execute(
+                    "SELECT 1 FROM messages WHERE id=? AND source=? AND target=? AND state='delivered'",
+                    (reply_to, destination, source)).fetchone():
+                raise BridgeError("reply_to must name a message from that person delivered to this session.")
             # Only local sources count: held messages from other people must not consume this budget.
             count = self.db.execute("SELECT count(*) FROM messages WHERE created > ? "
                                     "AND substr(source, 1, 7) != 'person:'", (time.time() - 3600,)).fetchone()[0]

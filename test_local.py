@@ -300,6 +300,18 @@ class LocalMcpTests(unittest.TestCase):
             adapter.assert_not_called()
             self.assertEqual(len(call_tool(self.params("status"), root=root)), 1)
 
+    def test_send_passes_reply_to_and_the_queue_checks_it(self):
+        with tempfile.TemporaryDirectory() as root:
+            box = LocalMailbox(Path(root))
+            self.addCleanup(box.db.close)
+            held = box.insert_inbound("person:alice", "Question", remote_key="key-1")
+            box.approve_inbound(held["id"], "ses_SOURCE")
+            box.mark(box.claim()["id"], "delivered", {"inbox_id": "inbox_EXAMPLE"})
+            call_tool(self.params("send", to="person:alice", text="Answer", reply_to=held["id"]), root=root)
+            self.assertEqual(box.claim("person:")["payload"]["reply_to"], held["id"])
+            with self.assertRaisesRegex(BridgeError, "delivered to this session"):
+                call_tool(self.params("send", to="person:bob", text="Answer", reply_to=held["id"]), root=root)
+
     def test_extra_capabilities_rejected(self):
         for name, args in (("send_file", {}), ("send", {"urgent": True}), ("whoami", {"source": "ses_OTHER"})):
             with self.assertRaises(BridgeError):
@@ -444,6 +456,27 @@ class CourierQueueApiTests(unittest.TestCase):
             with self.subTest(reason=index), self.assertRaises(BridgeError):
                 self.box.reject_inbound(message["id"], reason=reason)
             self.assertEqual(self.box.get(message["id"])["state"], "held")
+
+    def test_reply_to_names_only_a_delivered_message_from_that_person(self):
+        held = self.hold()
+        self.box.approve_inbound(held["id"], "ses_TARGET")
+        with self.assertRaises(BridgeError):  # Approved but not yet delivered.
+            self.box.enqueue("ses_TARGET", "person:alice", "Answer", reply_to=held["id"])
+        self.box.mark(self.box.claim()["id"], "delivered", {"inbox_id": "inbox_EXAMPLE"})
+        self.box.enqueue("ses_TARGET", "person:alice", "Answer", reply_to=held["id"])
+        self.assertEqual(self.box.claim("person:")["payload"]["reply_to"], held["id"])
+        local = self.box.enqueue("ses_OTHER", "ses_TARGET", "No link")
+        self.assertNotIn("reply_to", self.box.get(local["id"])["payload"])
+        self.box.mark(self.box.claim()["id"], "delivered", {"inbox_id": "inbox_EXAMPLE"})
+        for index, (source, target, reply_to, error) in enumerate((
+                ("ses_OTHER", "person:alice", held["id"], "delivered to this session"),  # Another session.
+                ("ses_TARGET", "person:bob", held["id"], "delivered to this session"),  # Another person.
+                ("ses_TARGET", "person:alice", "msg_" + "0" * 32, "delivered to this session"),
+                ("ses_TARGET", "ses_OTHER", local["id"], "remote person"),  # Delivered, but local.
+                ("ses_TARGET", "person:alice", "not-a-message-id", "message ID"),
+                ("ses_TARGET", "person:alice", 7, "message ID"))):
+            with self.subTest(case=index), self.assertRaisesRegex(BridgeError, error):
+                self.box.enqueue(source, target, "Answer", reply_to=reply_to)
 
     def test_cancel_person_spares_sending_messages_and_other_people(self):
         sending = self.hold(key="sending")
