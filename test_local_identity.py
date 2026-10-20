@@ -95,6 +95,18 @@ class LocalNodeValidationTests(unittest.TestCase):
             with self.subTest(node=node), self.assertRaises(BridgeError):
                 config.local_node(node)
 
+    def test_reserved_namespaces_cannot_be_node_names(self):
+        for node in ("claude", "Claude", "person", "PERSON"):
+            with self.subTest(node=node):
+                with patch.dict(os.environ, {"OPENCODE_CONNECT_LOCAL_NODE": node}):
+                    with self.assertRaisesRegex(BridgeError, "reserved"):
+                        config.local_node()
+                with self.assertRaisesRegex(BridgeError, "reserved"):
+                    config.local_node(node)
+        for node in ("claudette", "personal", "claude2"):
+            with self.subTest(node=node):
+                self.assertEqual(config.local_node(node), node)
+
     def test_session_accepts_only_bare_alias_or_own_canonical_address(self):
         for value in ("ses_ALPHA", "local:ses_ALPHA", "linux:ses_ALPHA"):
             with self.subTest(value=value):

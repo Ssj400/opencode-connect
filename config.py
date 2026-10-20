@@ -9,6 +9,8 @@ import stat
 from core import BridgeError
 
 ROOT = Path(__file__).resolve().parent
+# Address namespaces that are not machines: Claude Code sessions and remote people.
+RESERVED_NODES = frozenset(("claude", "person"))
 
 
 def local_node(value=None):
@@ -17,6 +19,8 @@ def local_node(value=None):
         value = os.environ.get("OPENCODE_CONNECT_LOCAL_NODE", "local")
     if not isinstance(value, str) or not re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]{0,63}", value):
         raise BridgeError("OPENCODE_CONNECT_LOCAL_NODE must be a simple node identifier.")
+    if value.lower() in RESERVED_NODES:
+        raise BridgeError(f"The node name {value!r} is reserved for another address namespace.")
     return value
 
 
