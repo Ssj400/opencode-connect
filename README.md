@@ -19,7 +19,7 @@ channel remains to be defined. See the [release checklist](docs/release-checklis
 
 ## Requirements and limitations
 
-- Python 3.10+ on Linux and WSL; standard library only, no `pip install` required.
+- Python 3.12+ on Linux and WSL; standard library only, no `pip install` required.
 - OpenCode V2 installed and authenticated locally on both sides, accessed through `opencode api`.
 - An OpenSSH client on Linux, a user-configured Windows OpenSSH Server, and
   WSL with `python3` accessible through `wsl.exe`.

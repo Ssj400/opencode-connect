@@ -4,7 +4,7 @@
    Do not inherit private history, configuration, or runtime state. Use flat scripts
    with local imports; an export must work from an independent directory.
 2. **Current platform scope.** Linux coordinator, Windows SSH, and OpenCode in WSL.
-   Python 3.10+ and the standard library. Do not claim universal support, native
+   Python 3.12+ and the standard library. Do not claim universal support, native
    Windows, macOS, direct Linux SSH, multiple transports, or arbitrary topologies.
 3. **No implicit changes.** Require adjacent configuration with absolute installation
    paths and no personal defaults. Shortcuts are optional for chat; reject unresolved
