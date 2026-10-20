@@ -6,6 +6,10 @@ authorized file transfers. Text chat does not require registering each session.
 and delivers them to Linux. No inbound SSH server is required on Linux. This is
 not a universal remote service or an automatic agent conversation loop.
 
+For text between sessions in the same local OpenCode service, including the same
+WSL environment, see [local messaging](docs/local-messaging.md). This opt-in mode
+needs neither SSH nor remote configuration and keeps its queue separate.
+
 The product vision is for **two people to work with their own assistants**, letting
 those assistants consult each other about shared work without making people relay
 every question manually. Each person retains control of their environment. This

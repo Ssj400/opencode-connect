@@ -38,6 +38,32 @@
 A daemon, GUI, frameworks, automatic credential-based reconnection or session
 selection, agent debates, automatic reconciliation, and additional platform adapters.
 
+## Opt-in local messaging
+
+`local_bridge.py` and `local_mcp_server.py` provide normal text queues for sessions
+sharing the same local OpenCode service. They do not load cross-machine routes or
+SSH settings and keep runtime data outside the checkout. Session search belongs
+to the OpenCode adapter, returns metadata-only pages, and never resolves a title
+directly into a send. The caller selects an explicit session ID after ambiguity
+is resolved. Queue schema and claim/receipt behavior reuse the existing mailbox;
+the existing cross-machine installation and state are not migrated. Local mode
+does not support files, steer, self delivery or automatic replies. See
+[local messaging](local-messaging.md) for setup and remaining live validation.
+
+Local transport does not define node identity. `OPENCODE_CONNECT_LOCAL_NODE`
+explicitly selects a canonical session namespace; `local` is the isolated default.
+The local queue binds mode, node and schema version transactionally before any
+insertion or claim. Existing populated unbound queues are not automatically
+adopted. This is a configuration contract, not a claim that CLI discovery exposes
+a stable server identity. Cross-machine routing and core contracts are unchanged.
+
+Use `OPENCODE_CONNECT_LOCAL_STATE_HOME` to isolate a bridge queue without changing
+the inherited CLI discovery context. Overriding the general `XDG_STATE_HOME` can
+also change OpenCode service discovery and storage; it is not a bridge-only
+isolation mechanism. The existing XDG location remains the fallback when no
+bridge-specific override is supplied.
+
+
 ## Next platform priorities
 
 Implement and test **Linux ↔ Linux** and **Windows ↔ Windows** first. Consider

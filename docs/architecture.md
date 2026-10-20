@@ -51,6 +51,13 @@ uncertain outcome. If saving a receipt fails, that error propagates; the claimed
 message remains retained for manual reconciliation. Stopping the relay never
 calls an agent cancellation API.
 
+An explicit `NotSent` exception records a proven failure before delivery effects
+as `failed`, without retry. Only the opt-in local preflight uses this signal;
+cross-machine delivery retains its existing conservative uncertainty behavior.
+An error during a POST or an ambiguous response must never be classified as
+`NotSent`. The local worker checks service access before claiming, so an outage
+detected by that check leaves the pending queue untouched.
+
 A file receiver accepts a message ID and the existing attachment payload and
 returns a destination path and hash. It must enforce file limits, verify integrity,
 avoid overwriting, and never execute content. Transfer happens before notification.

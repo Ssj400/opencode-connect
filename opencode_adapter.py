@@ -2,6 +2,7 @@
 
 import json
 import re
+from urllib.parse import urlencode
 from typing import Any, Protocol, TYPE_CHECKING
 
 from core import BridgeError
@@ -55,6 +56,43 @@ class OpenCodeAdapter:
         response = self.api.call("post", f"/api/session/{session}/prompt",
                                  {"id": message_id, "text": text, "delivery": delivery})
         return response["data"]["id"]
+
+    def find_sessions(self, query, *, cursor=None, exclude=None):
+        """Return one bounded metadata-only page; never resolve a title to a target."""
+        if not isinstance(query, str) or not query.strip() or len(query) > 200:
+            raise BridgeError("Search must contain between 1 and 200 characters.")
+        params = {"search": query, "limit": "25", "parentID": "null"}
+        if cursor is not None:
+            if not isinstance(cursor, str) or not cursor or len(cursor) > 4096:
+                raise BridgeError("Invalid session search cursor.")
+            params["cursor"] = cursor
+        response = self.api.call("get", "/api/session?" + urlencode(params))
+        if (not isinstance(response, dict) or not isinstance(response.get("data"), list)
+                or not isinstance(response.get("cursor"), dict)):
+            raise BridgeError("Unexpected session search response.")
+        candidates = []
+        for item in response["data"]:
+            if not isinstance(item, dict):
+                raise BridgeError("Unexpected session search item.")
+            session = self.session_id(item.get("id"))
+            timestamps = item.get("time", {})
+            if not isinstance(timestamps, dict):
+                raise BridgeError("Unexpected session search timestamps.")
+            if session == exclude or item.get("parentID") or timestamps.get("archived") is not None:
+                continue
+            title = item.get("title", "")
+            location = item.get("location")
+            if (not isinstance(title, str) or not isinstance(location, dict)
+                    or not isinstance(location.get("directory"), str)):
+                raise BridgeError("Unexpected session search metadata.")
+            candidates.append({"id": session, "title": title, "directory": location["directory"],
+                               "exact": title.casefold() == query.casefold()})
+        candidates.sort(key=lambda item: not item["exact"])
+        next_cursor = response["cursor"].get("next")
+        if next_cursor is not None and (not isinstance(next_cursor, str) or not next_cursor):
+            raise BridgeError("Unexpected session search cursor.")
+        return {"candidates": candidates, "next_cursor": next_cursor,
+                "complete": next_cursor is None}
 
     def create_session(self, *, title, directory):
         return self.api.call("post", "/api/session", {

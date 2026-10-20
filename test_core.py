@@ -147,6 +147,26 @@ class CoreTests(unittest.TestCase):
         deliver.assert_called_once()
         mailbox.mark.assert_called_once()
 
+    def test_proven_unsent_delivery_is_failed_without_retry(self):
+        mailbox = Mock()
+        mailbox.claim.return_value = sample_job()
+        deliver = Mock(side_effect=core.NotSent("Destination unavailable before delivery"))
+        result = core.relay_once(mailbox, deliver)
+        self.assertEqual(result["state"], "failed")
+        deliver.assert_called_once()
+        mailbox.mark.assert_called_once_with("message-example", "failed",
+                                             "Destination unavailable before delivery")
+
+    def test_unsent_receipt_persistence_failure_propagates(self):
+        mailbox = Mock()
+        mailbox.claim.return_value = sample_job()
+        mailbox.mark.side_effect = OSError("Receipt unavailable")
+        deliver = Mock(side_effect=core.NotSent("No delivery attempted"))
+        with self.assertRaises(OSError):
+            core.relay_once(mailbox, deliver)
+        deliver.assert_called_once()
+        mailbox.mark.assert_called_once()
+
     def test_stop_does_not_cancel_agents_or_reset_claimed_jobs(self):
         mailbox = Mock()
         mailbox.claim.return_value = sample_job()

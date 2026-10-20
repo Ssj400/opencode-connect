@@ -12,6 +12,13 @@ class BridgeError(Exception):
     pass
 
 
+class NotSent(BridgeError):
+    """A caller guarantees failure occurred before any delivery side effects.
+
+    Never use for a failed POST, attachment transfer, or ambiguous response.
+    """
+
+
 @dataclass(frozen=True)
 class Peer:
     node: str
@@ -155,6 +162,8 @@ def relay_once(mailbox: MailboxAdapter,
         return None
     try:
         result = deliver(job)
+    except NotSent as exc:
+        state, result = "failed", str(exc)[:1000]
     except (BridgeError, KeyError, ValueError, OSError) as exc:
         state, result = "uncertain", str(exc)[:1000]
     else:
