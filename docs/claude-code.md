@@ -55,6 +55,9 @@ matcher must name the server: `mcp__opencode_connect__.*` for the name above.
 Start a new session, or reconnect the server in `/mcp`, and check that it shows as
 connected. Ask Claude to call `whoami`: it returns `claude:<uuid>` for the current
 session. `/status` lists `Project local settings` among the loaded sources.
+`python3 bridge.py doctor --local` then checks the queue's contract and backlog and
+whether identity stamps are being consumed, without changing anything or needing
+`routes.json`.
 
 The server, the hooks, OpenCode's local MCP server, and the relay must share one
 queue: the same account, state home, and node. With the defaults nothing needs to be

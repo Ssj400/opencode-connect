@@ -122,6 +122,8 @@ empty unbound queue reports a null stored contract; diagnosis does not bind it.
 These diagnostics contain private runtime paths: do not publish their output.
 `whoami` validates node configuration and caller metadata, but does not validate
 queue or service identity. Compare diagnostics before starting a worker.
+`python3 bridge.py doctor --local` reads the same contract and the backlog per
+consumer through a read-only connection, and needs no `routes.json`.
 
 An older queue containing any messages but no contract is rejected for insertion
 and claim. This includes historical delivered messages: no automatic adoption,

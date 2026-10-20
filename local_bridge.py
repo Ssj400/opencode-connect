@@ -95,6 +95,45 @@ REMOTE_KEY = re.compile(r"[A-Za-z0-9._:-]{1,128}")
 MESSAGE_ID = re.compile(r"msg_[0-9a-f]{32}")
 
 
+def migratable(stored, node):
+    """A version 1 contract bound to this node, which `migrate` can upgrade."""
+    return (stored is not None and stored.get("schema_version") == 1
+            and stored.get("mode") == "local" and stored.get("canonical_node") == node)
+
+
+def inspect_queue(node=None):
+    """Read-only facts about the local queue for diagnosis; never creates, binds, or claims.
+
+    Returns None when no queue exists yet. Otherwise its stored contract, whether this
+    configuration may use it, and message counts per target namespace and state.
+    """
+    node = local_node(node)
+    path = state_path() / ".state" / "mail.sqlite3"
+    if path.is_symlink():
+        raise BridgeError("The database must not be a symlink.")
+    if not path.is_file():
+        return None
+    db = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)
+    try:
+        bound = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='local_contract'").fetchone()
+        contracts = db.execute("SELECT schema_version, mode, canonical_node FROM local_contract").fetchall() if bound else []
+        counts = {}
+        for namespace, state, count in db.execute(
+                "SELECT substr(target, 1, instr(target, ':') - 1), state, count(*) FROM messages GROUP BY 1, 2"):
+            counts.setdefault(namespace or "unassigned", {})[state] = count
+    except sqlite3.Error as exc:
+        raise BridgeError(f"Could not read the local queue: {exc}") from exc
+    finally:
+        db.close()
+    if len(contracts) > 1:
+        raise BridgeError("Invalid local queue contract; review state manually.")
+    configured = {"schema_version": SCHEMA_VERSION, "mode": "local", "canonical_node": node}
+    stored = dict(zip(("schema_version", "mode", "canonical_node"), contracts[0])) if contracts else None
+    return {"contract": stored, "configured": configured, "counts": counts,
+            "compatible": stored == configured if stored is not None else not counts,
+            "migration_needed": migratable(stored, node)}
+
+
 class LocalMailbox(Mailbox):
     """Separate database using the existing claim/receipt schema and crash behavior."""
 
@@ -104,8 +143,7 @@ class LocalMailbox(Mailbox):
         super().__init__(root)
 
     def _migratable(self, stored):
-        return (stored is not None and stored.get("schema_version") == 1
-                and stored.get("mode") == "local" and stored.get("canonical_node") == self.node)
+        return migratable(stored, self.node)
 
     def migrate(self):
         """Upgrade a version 1 contract bound to this node, leaving every row untouched.

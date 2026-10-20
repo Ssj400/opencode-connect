@@ -9,9 +9,10 @@ import json
 from pathlib import Path
 import shutil
 import sys
+import time
 from types import SimpleNamespace
 
-from config import BridgeError, load_config, validate_ssh
+from config import BridgeError, load_config, local_node, validate_ssh
 from opencode_adapter import OpenCodeCli, check, probe_api
 from transports import LocalCommandTransport, WindowsWslSshTransport, tcp_probe, without_ssh_advisories
 
@@ -293,20 +294,112 @@ def diagnose_delivery(collab, root, inspection, report):
         report(OK, "Queues", summary)
 
 
-def print_findings(findings):
+def diagnose_local(node=None):
+    """Read-only diagnosis of this machine's local queue and Claude Code hooks.
+
+    Needs no routes.json. Opens nothing for writing and creates nothing: the queue is
+    read through a read-only connection, and no relay, courier, or hook is run.
+    Returns (status, area, summary, hint) tuples like `diagnose`.
+    """
+    import claude_hook  # Loaded on demand, like collab in diagnose.
+    import local_bridge
+
+    findings = []
+
+    def report(status, area, summary, hint=None):
+        findings.append((status, area, summary, hint))
+
+    try:
+        node = local_node(node)
+        queue = local_bridge.inspect_queue(node)
+    except BridgeError as exc:
+        report(FAIL, "Local queue", str(exc), "Do not delete the database; review it before using the bridge.")
+        return findings
+    if queue is None:
+        report(SKIP, "Local queue", "no local queue yet",
+               "It appears with the first local message. MCP servers, hooks, and the relay must "
+               "share one OPENCODE_CONNECT_LOCAL_STATE_HOME.")
+    else:
+        counts, stored = queue["counts"], queue["contract"]
+        totals = {}
+        for states in counts.values():
+            for state, count in states.items():
+                totals[state] = totals.get(state, 0) + count
+        if queue["migration_needed"]:
+            report(WARN, "Local queue", f"version 1 contract for node {node}; {describe(totals)}",
+                   "Stop local relays and MCP processes, then run `python3 local_bridge.py migrate`.")
+        elif not queue["compatible"]:
+            bound = (f"bound to node {stored['canonical_node']}, version {stored['schema_version']}"
+                     if stored else "unbound but already holding messages")
+            report(FAIL, "Local queue", f"{bound}; this configuration uses node {node}",
+                   "Use the same OPENCODE_CONNECT_LOCAL_NODE for every MCP server, hook, relay, and "
+                   "courier of this queue; do not edit or delete it.")
+        else:
+            report(OK, "Local queue", f"node {node}; {describe(totals)}")
+        attention = totals.get("sending", 0) + totals.get("uncertain", 0)
+        if attention:
+            report(WARN, "Local messages", f"{attention} sending or uncertain",
+                   "Review them with `python3 local_bridge.py status`, then record the outcome with "
+                   "`resolve`; never resend blindly.")
+        consumers = ((node, "OpenCode sessions", "Delivered only while `python3 local_bridge.py relay` runs; "
+                      "it can use model quota."),
+                     ("claude", "Claude Code sessions", "Each session reads them with receive when its hooks "
+                      "point at them."),
+                     ("person", "other people", "Uploaded only while the courier runs."))
+        for namespace, who, hint in consumers:
+            pending = counts.get(namespace, {}).get("pending", 0)
+            if pending:
+                report(OK, "Local messages", f"{pending} waiting for {who}", hint)
+        held = counts.get("unassigned", {}).get("held", 0)
+        if held:
+            report(WARN, "Local messages", f"{held} from other people held for approval",
+                   "Review and approve them in the courier's inbox.")
+    stamps = local_bridge.state_path() / ".state" / "claude"
+    if not stamps.is_dir() or stamps.is_symlink():
+        report(SKIP, "Claude Code", "no session has used the hooks yet",
+               "Set up the server and hooks as in docs/claude-code.md, then ask Claude to call whoami.")
+        return findings
+    now = time.time()
+    stale = [path for path in stamps.glob("*.stamp") if now - path.lstat().st_mtime > claude_hook.STAMP_TTL]
+    if stale:
+        report(WARN, "Claude Code", f"{len(stale)} identity stamp(s) never consumed",
+               "The PreToolUse hook ran but the server never read its stamp: check that both use the "
+               "same state home and that the server is connected in /mcp.")
+    else:
+        report(OK, "Claude Code", "hooks have run; no stale identity stamps")
+    return findings
+
+
+def print_findings(findings, local=False):
     print("OpenCode Connect doctor (read-only: sends no messages and starts nothing)")
     width = max(len(area) for _, area, _, _ in findings)
     for status, area, summary, hint in findings:
         print(f"  {status:<4}  {area:<{width}}  {summary}")
         if hint:
             print(f"  {'':<4}  {'':<{width}}  -> {hint}")
-    print("MCP setup is per OpenCode project and is not checked here: use /mcps and whoami.")
+    if local:
+        print("MCP setup is per project and is not checked here: use /mcps or /mcp, then whoami.")
+    else:
+        print("MCP setup is per OpenCode project and is not checked here: use /mcps and whoami.")
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=["connect", "check", "doctor"])
+    parser.add_argument("--local", action="store_true",
+                        help="with doctor: check only this machine's local queue and Claude Code hooks; "
+                             "needs no routes.json")
     args = parser.parse_args()
+    if args.local and args.command != "doctor":
+        parser.error("--local applies only to doctor")
+    if args.command == "doctor" and args.local:
+        try:
+            findings = diagnose_local()
+        except (BridgeError, OSError) as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            return 1
+        print_findings(findings, local=True)
+        return 1 if any(status == FAIL for status, *_ in findings) else 0
     if args.command == "doctor":
         try:
             findings = diagnose()

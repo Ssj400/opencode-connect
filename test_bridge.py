@@ -12,12 +12,16 @@ from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
+import uuid
 
 import bridge
 import collab
 import config
 import deploy
 import transports
+
+
+CLAUDE_ADDRESS = "claude:" + str(uuid.UUID(int=1))
 
 
 def fixture():
@@ -401,6 +405,99 @@ class DoctorTests(unittest.TestCase):
                 self.assertEqual(bridge.main(), code)
             self.assertIn("-> ", output.getvalue())
             self.assertIn("/mcps", output.getvalue())
+
+
+class LocalDoctorTests(unittest.TestCase):
+    """`doctor --local`: this machine's local queue and Claude Code hooks, read-only."""
+
+    def setUp(self):
+        temporary = TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.home = Path(temporary.name)
+        environment = patch.dict(os.environ, {"OPENCODE_CONNECT_LOCAL_NODE": "local",
+                                              "OPENCODE_CONNECT_LOCAL_STATE_HOME": temporary.name})
+        environment.start()
+        self.addCleanup(environment.stop)
+
+    def mailbox(self, node=None):
+        import local_bridge
+        box = local_bridge.LocalMailbox(local_bridge.state_root(), node=node)
+        self.addCleanup(box.db.close)
+        return box
+
+    def summaries(self, findings):
+        return [(status, area, summary) for status, area, summary, _ in findings]
+
+    def test_nothing_set_up_is_skipped_and_nothing_is_created(self):
+        findings = bridge.diagnose_local()
+        self.assertEqual([(status, area) for status, area, *_ in findings],
+                         [(bridge.SKIP, "Local queue"), (bridge.SKIP, "Claude Code")])
+        self.assertEqual(list(self.home.iterdir()), [])
+
+    def test_counts_messages_per_consumer_without_changing_the_queue(self):
+        box = self.mailbox()
+        box.enqueue("ses_SOURCE", "ses_TARGET", "For OpenCode")
+        box.enqueue("ses_SOURCE", CLAUDE_ADDRESS, "For Claude")
+        box.enqueue("ses_SOURCE", "person:bob", "For Bob")
+        box.insert_inbound("person:alice", "From Alice", remote_key="key-1")
+        box.claim()
+        database = box.state / "mail.sqlite3"
+        before = database.read_bytes()
+        with patch("local_bridge.LocalMailbox", side_effect=AssertionError("no writable mailbox")):
+            findings = bridge.diagnose_local()
+        self.assertEqual(database.read_bytes(), before)
+        self.assertEqual(self.summaries(findings), [
+            (bridge.OK, "Local queue", "node local; 2 pending, 1 sending, 1 held"),
+            (bridge.WARN, "Local messages", "1 sending or uncertain"),
+            (bridge.OK, "Local messages", "1 waiting for Claude Code sessions"),
+            (bridge.OK, "Local messages", "1 waiting for other people"),
+            (bridge.WARN, "Local messages", "1 from other people held for approval"),
+            (bridge.SKIP, "Claude Code", "no session has used the hooks yet")])
+
+    def test_a_queue_bound_to_another_node_fails_and_version_one_needs_migration(self):
+        self.mailbox(node="other").claim()
+        status, area, summary, hint = bridge.diagnose_local()[0]
+        self.assertEqual((status, area), (bridge.FAIL, "Local queue"))
+        self.assertIn("bound to node other", summary)
+        self.assertIn("OPENCODE_CONNECT_LOCAL_NODE", hint)
+        box = self.mailbox(node="other")
+        with box.transaction():
+            box.db.execute("UPDATE local_contract SET schema_version=1, canonical_node='local'")
+        status, area, summary, hint = bridge.diagnose_local()[0]
+        self.assertEqual((status, area), (bridge.WARN, "Local queue"))
+        self.assertIn("local_bridge.py migrate", hint)
+        box.db.execute("INSERT INTO messages VALUES ('msg_old', 0, 'local:ses_A', 'local:ses_B', "
+                       "'queue', 'message', '{}', 'delivered', NULL)")
+        box.db.execute("DROP TABLE local_contract")
+        box.db.commit()
+        self.assertEqual(self.summaries(bridge.diagnose_local())[0][:2], (bridge.FAIL, "Local queue"))
+        self.assertIn("unbound but already holding messages", bridge.diagnose_local()[0][2])
+
+    def test_stale_identity_stamps_point_at_a_server_that_never_reads_them(self):
+        import claude_hook
+        claude_hook.record("toolu_FRESH", CLAUDE_ADDRESS)
+        self.assertEqual(self.summaries(bridge.diagnose_local())[-1],
+                         (bridge.OK, "Claude Code", "hooks have run; no stale identity stamps"))
+        stamp = claude_hook.spool() / "toolu_FRESH.stamp"
+        past = stamp.lstat().st_mtime - claude_hook.STAMP_TTL - 1
+        os.utime(stamp, (past, past))
+        status, area, summary, hint = bridge.diagnose_local()[-1]
+        self.assertEqual((status, area, summary), (bridge.WARN, "Claude Code", "1 identity stamp(s) never consumed"))
+        self.assertIn("same state home", hint)
+
+    def test_cli_local_flag_runs_only_the_local_checks(self):
+        cases = (([(bridge.OK, "Local queue", "node local; empty", None)], 0),
+                 ([(bridge.FAIL, "Local queue", "bound to node other", "Use the same node.")], 1))
+        for findings, code in cases:
+            output = io.StringIO()
+            with self.subTest(code=code), patch("bridge.diagnose_local", return_value=findings), \
+                    patch("bridge.diagnose", side_effect=AssertionError("cross-machine checks")), \
+                    patch("sys.argv", ["bridge.py", "doctor", "--local"]), contextlib.redirect_stdout(output):
+                self.assertEqual(bridge.main(), code)
+            self.assertIn("/mcp", output.getvalue())
+        with patch("sys.argv", ["bridge.py", "check", "--local"]), contextlib.redirect_stderr(io.StringIO()), \
+                self.assertRaises(SystemExit):
+            bridge.main()
 
 
 class InspectionTests(unittest.TestCase):
