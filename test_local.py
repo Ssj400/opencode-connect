@@ -423,6 +423,27 @@ class CourierQueueApiTests(unittest.TestCase):
         with self.assertRaises(BridgeError):
             self.box.inbound_state(held["id"], "local:ses_TARGET")
         self.assertEqual(self.box.inbound(("rejected",))[0]["id"], held["id"])
+        self.assertIsNone(self.box.get(held["id"])["result"])
+
+    def test_get_reads_one_message_and_rejection_keeps_its_reason(self):
+        self.assertIsNone(self.box.get("msg_" + "0" * 32))
+        self.assertIsNone(self.box.diagnostics()["stored"])  # A read never binds the contract.
+        held = self.hold()
+        row = self.box.get(held["id"])
+        self.assertEqual((row["id"], row["state"], row["source"], row["target"], row["payload"]["text"]),
+                         (held["id"], "held", "person:alice", "", "Question from Alice"))
+        self.assertFalse(self.box.db.in_transaction)
+        self.box.reject_inbound(held["id"], reason="Retention expired.")
+        self.assertEqual(json.loads(self.box.get(held["id"])["result"]), {"reason": "Retention expired."})
+        self.box.enqueue("ses_SOURCE", "person:bob", "Upload")
+        with self.box.transaction() as queue:
+            job = queue.claim("person:")
+            self.assertEqual(queue.get(job["id"])["state"], "sending")
+        for index, reason in enumerate(("", " ", 7, "x" * 501)):
+            message = self.hold(key=f"bad-{index}")
+            with self.subTest(reason=index), self.assertRaises(BridgeError):
+                self.box.reject_inbound(message["id"], reason=reason)
+            self.assertEqual(self.box.get(message["id"])["state"], "held")
 
     def test_cancel_person_spares_sending_messages_and_other_people(self):
         sending = self.hold(key="sending")

@@ -184,9 +184,18 @@ class LocalMailbox(Mailbox):
             if row is None:
                 return None
             self.db.execute("UPDATE messages SET state='sending' WHERE id=?", (row["id"],))
+        return self._decoded(row)
+
+    @staticmethod
+    def _decoded(row):
         result = dict(row)
         result["payload"] = json.loads(result["payload"])
         return result
+
+    def get(self, message_id):
+        """One message in the shape `claim` returns, or None. Read-only."""
+        row = self.db.execute("SELECT * FROM messages WHERE id=?", (message_id,)).fetchone()
+        return None if row is None else self._decoded(row)
 
     @contextlib.contextmanager
     def transaction(self):
@@ -280,10 +289,14 @@ class LocalMailbox(Mailbox):
                             (destination, json.dumps(payload, ensure_ascii=False), message_id))
         return {"id": message_id, "state": "pending", "target": destination}
 
-    def reject_inbound(self, message_id):
+    def reject_inbound(self, message_id, reason=None):
+        """Mark a held message `rejected`; a reason, such as an expiry, is kept as its result."""
+        if reason is not None and (not isinstance(reason, str) or not reason.strip() or len(reason) > 500):
+            raise BridgeError("A rejection reason must be short text.")
+        result = None if reason is None else json.dumps({"reason": reason}, ensure_ascii=False)
         with self._write():
-            changed = self.db.execute("UPDATE messages SET state='rejected' WHERE id=? AND state='held' "
-                                      "AND substr(source, 1, 7)='person:'", (message_id,)).rowcount
+            changed = self.db.execute("UPDATE messages SET state='rejected', result=? WHERE id=? AND state='held' "
+                                      "AND substr(source, 1, 7)='person:'", (result, message_id)).rowcount
         if not changed:
             raise BridgeError("Only a held message from a remote person can be rejected.")
         return {"id": message_id, "state": "rejected"}

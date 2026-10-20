@@ -167,12 +167,14 @@ A courier that exchanges messages with other people uses only these
   repeat returns the first message with `duplicate: true`.
 - `approve_inbound(id, target)` gives a held message the destination a human chose:
   this node's OpenCode session or `claude:<uuid>`, never another person.
-  `reject_inbound(id)` marks it `rejected`.
+  `reject_inbound(id, reason=None)` marks it `rejected`, keeping a reason such as an
+  expiry as its result.
 - `cancel_person(person, outbound=False)` cancels that person's held and approved
   but unclaimed messages; `outbound=True` also cancels unsent messages to them.
   Messages already `sending` are left for review.
 - `inbound(states)` lists remote messages with raw text, and `inbound_state(id, source)`
-  reports one message's state only to the person who sent it.
+  reports one message's state only to the person who sent it. `get(id)` reads any one
+  message in the shape `claim` returns, or `None`.
 - `claim("person:")`, `mark(...)`, and `release(id)` handle uploads. `release` returns
   a claimed upload to `pending`, which is safe only because uploads are idempotent.
 
