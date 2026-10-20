@@ -21,9 +21,10 @@ from transports import LocalCommandTransport
 
 
 def state_root():
-    base = Path(os.environ.get("XDG_STATE_HOME", str(Path.home() / ".local/state")))
+    base = Path(os.environ.get("OPENCODE_CONNECT_LOCAL_STATE_HOME",
+                              os.environ.get("XDG_STATE_HOME", str(Path.home() / ".local/state"))))
     if not base.is_absolute():
-        raise BridgeError("XDG_STATE_HOME must be absolute.")
+        raise BridgeError("The local bridge state home must be absolute.")
     return private_directory(base / "opencode-connect" / "local")
 
 

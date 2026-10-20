@@ -35,9 +35,13 @@ the default `local` preserves standalone use but cannot interoperate with a
 cross-machine MCP that recognizes only `linux` and `wsl`. No OS-based inference
 or fallback to another transport is performed.
 
-MCP and worker must use the same `OPENCODE_CONNECT_LOCAL_NODE` and `XDG_STATE_HOME`.
-For an isolated test queue, supply a dedicated private absolute `XDG_STATE_HOME`
-to both processes rather than using an operational queue. Both sessions can use
+MCP and worker must use the same `OPENCODE_CONNECT_LOCAL_NODE` and bridge state home.
+For an isolated test queue, supply a dedicated private absolute
+`OPENCODE_CONNECT_LOCAL_STATE_HOME` to both processes rather than using an operational
+queue. Do not change `XDG_STATE_HOME` just to isolate the bridge: OpenCode also uses
+it for service discovery and storage, so changing it can select or attempt to start
+a different service. The bridge-specific variable leaves the CLI environment intact.
+Both sessions can use
 one project configuration if its scope covers both; do not install duplicate
 servers or overwrite existing configuration without checking that scope.
 
@@ -97,8 +101,9 @@ responses and consume quota or budget.** `relay --once` also delivers a message;
 it is not a harmless health check. One local relay can run at a time. Ctrl+C stops
 the worker, not an agent. No daemon or automatic startup is installed.
 
-Local state uses `$XDG_STATE_HOME/opencode-connect/local/.state/` or the equivalent
-under `~/.local/state/`. MCP and CLI must run with the same account and state-home
+Local state uses `$OPENCODE_CONNECT_LOCAL_STATE_HOME/opencode-connect/local/.state/`
+when explicitly configured, otherwise the corresponding path under the existing
+`XDG_STATE_HOME` or `~/.local/state/`. MCP and CLI must run with the same account and state-home
 setting to share a queue. It is separate from the cross-machine bridge's state.
 The source tree remains free of operational configuration and queues.
 

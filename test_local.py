@@ -248,10 +248,10 @@ class LocalMcpTests(unittest.TestCase):
 
     def test_state_path_needs_no_ssh_configuration(self):
         with tempfile.TemporaryDirectory() as root:
-            with patch.dict("os.environ", {"XDG_STATE_HOME": root}):
+            with patch.dict("os.environ", {"XDG_STATE_HOME": root}, clear=True):
                 path = state_root()
                 self.assertEqual(path, Path(root) / "opencode-connect/local")
-            with patch.dict("os.environ", {"XDG_STATE_HOME": "relative"}):
+            with patch.dict("os.environ", {"XDG_STATE_HOME": "relative"}, clear=True):
                 with self.assertRaises(BridgeError):
                     state_root()
         self.assertEqual(session("local:ses_EXAMPLE"), "ses_EXAMPLE")

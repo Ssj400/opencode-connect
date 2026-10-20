@@ -15,7 +15,7 @@ from unittest.mock import Mock, patch
 import collab
 import config
 from core import BridgeError, relay_once
-from local_bridge import LocalMailbox, deliver_local, local_adapter, local_relay_once, session
+from local_bridge import LocalMailbox, deliver_local, local_adapter, local_relay_once, session, state_root
 from local_mcp_server import call_tool
 from opencode_adapter import OpenCodeAdapter
 
@@ -35,6 +35,16 @@ def mixed_config():
 
 
 class LocalNodeValidationTests(unittest.TestCase):
+    def test_bridge_state_override_does_not_change_cli_discovery_environment(self):
+        with tempfile.TemporaryDirectory(prefix="local-state-") as root:
+            with patch.dict(os.environ, {"OPENCODE_CONNECT_LOCAL_STATE_HOME": root,
+                                         "XDG_STATE_HOME": "/srv/example/service-state"}):
+                self.assertEqual(state_root(), Path(root) / "opencode-connect/local")
+                self.assertEqual(os.environ["XDG_STATE_HOME"], "/srv/example/service-state")
+            with patch.dict(os.environ, {"OPENCODE_CONNECT_LOCAL_STATE_HOME": "relative"}):
+                with self.assertRaises(BridgeError):
+                    state_root()
+
     def test_factory_constructs_only_local_transport_with_explicit_cli(self):
         with patch("local_bridge.LocalCommandTransport") as transport, \
                 patch("local_bridge.OpenCodeCli") as cli, \
@@ -328,7 +338,7 @@ class LocalIdentityQueueTests(unittest.TestCase):
 class LocalIdentityMcpTests(unittest.TestCase):
     def test_separate_stdio_clients_and_cli_share_configured_contract(self):
         with tempfile.TemporaryDirectory(prefix="local-stdio-") as root:
-            environment = {**os.environ, "XDG_STATE_HOME": root,
+            environment = {**os.environ, "OPENCODE_CONNECT_LOCAL_STATE_HOME": root,
                            "OPENCODE_CONNECT_LOCAL_NODE": "wsl"}
             checkout = Path(__file__).resolve().parent
 

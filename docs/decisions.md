@@ -57,6 +57,12 @@ insertion or claim. Existing populated unbound queues are not automatically
 adopted. This is a configuration contract, not a claim that CLI discovery exposes
 a stable server identity. Cross-machine routing and core contracts are unchanged.
 
+Use `OPENCODE_CONNECT_LOCAL_STATE_HOME` to isolate a bridge queue without changing
+the inherited CLI discovery context. Overriding the general `XDG_STATE_HOME` can
+also change OpenCode service discovery and storage; it is not a bridge-only
+isolation mechanism. The existing XDG location remains the fallback when no
+bridge-specific override is supplied.
+
 
 ## Next platform priorities
 
