@@ -21,6 +21,9 @@ FILES = (
     "examples/opencode.jsonc.example", "skills/opencode-connect/SKILL.md",
     "local_bridge.py", "local_mcp_server.py", "test_local.py", "test_local_identity.py",
     "docs/local-messaging.md",
+    "courier.py",
+    "test_courier.py",
+    "docs/multi-person.md",
 )
 
 
