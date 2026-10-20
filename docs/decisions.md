@@ -50,6 +50,13 @@ the existing cross-machine installation and state are not migrated. Local mode
 does not support files, steer, self delivery or automatic replies. See
 [local messaging](local-messaging.md) for setup and remaining live validation.
 
+Local transport does not define node identity. `OPENCODE_CONNECT_LOCAL_NODE`
+explicitly selects a canonical session namespace; `local` is the isolated default.
+The local queue binds mode, node and schema version transactionally before any
+insertion or claim. Existing populated unbound queues are not automatically
+adopted. This is a configuration contract, not a claim that CLI discovery exposes
+a stable server identity. Cross-machine routing and core contracts are unchanged.
+
 
 ## Next platform priorities
 

@@ -11,6 +11,15 @@ from core import BridgeError
 ROOT = Path(__file__).resolve().parent
 
 
+def local_node(value=None):
+    """Explicit session namespace, independent of OS and command transport."""
+    if value is None:
+        value = os.environ.get("OPENCODE_CONNECT_LOCAL_NODE", "local")
+    if not isinstance(value, str) or not re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]{0,63}", value):
+        raise BridgeError("OPENCODE_CONNECT_LOCAL_NODE must be a simple node identifier.")
+    return value
+
+
 def clean_text(value, field, maximum=4096):
     if (not isinstance(value, str) or not value or value != value.strip()
             or len(value) > maximum or any(ord(c) < 32 or ord(c) == 127 for c in value)):

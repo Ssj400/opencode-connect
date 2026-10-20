@@ -64,6 +64,9 @@ class DiscoveryTests(unittest.TestCase):
 
 class LocalQueueTests(unittest.TestCase):
     def setUp(self):
+        environment = patch.dict("os.environ", {"OPENCODE_CONNECT_LOCAL_NODE": "local"})
+        environment.start()
+        self.addCleanup(environment.stop)
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
         self.box = LocalMailbox(self.root)
@@ -202,6 +205,11 @@ class LocalQueueTests(unittest.TestCase):
 
 
 class LocalMcpTests(unittest.TestCase):
+    def setUp(self):
+        environment = patch.dict("os.environ", {"OPENCODE_CONNECT_LOCAL_NODE": "local"})
+        environment.start()
+        self.addCleanup(environment.stop)
+
     def params(self, name, **args):
         return {"name": name, "arguments": args, "_meta": {"ai.opencode/sessionID": "ses_SOURCE"}}
 
@@ -231,7 +239,7 @@ class LocalMcpTests(unittest.TestCase):
 
     def test_protocol_has_only_local_tools(self):
         tools = handle({"id": 1, "method": "tools/list"})["result"]["tools"]
-        self.assertEqual({t["name"] for t in tools}, {"whoami", "find_sessions", "send", "status"})
+        self.assertEqual({t["name"] for t in tools}, {"whoami", "find_sessions", "send", "status", "diagnose"})
         reply = handle({"id": 2, "method": "tools/call", "params": {"name": "send"}})
         self.assertTrue(reply["result"]["isError"])
         self.assertIsNone(handle({"method": "notifications/initialized"}))

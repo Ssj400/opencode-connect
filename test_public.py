@@ -132,7 +132,7 @@ try: config.load_config(root)
 except config.BridgeError: pass
 else: raise AssertionError("unexpected configuration")
 assert mcp_server.handle({"id":1,"method":"initialize"})["result"]["serverInfo"]["name"] == "opencode-connect"
-suite=unittest.defaultTestLoader.loadTestsFromNames(["test_bridge", "test_collab", "test_core", "test_adapters", "test_chat", "test_local"])
+suite=unittest.defaultTestLoader.loadTestsFromNames(["test_bridge", "test_collab", "test_core", "test_adapters", "test_chat", "test_local", "test_local_identity"])
 result=unittest.TextTestRunner(verbosity=0).run(suite)
 sys.exit(0 if result.wasSuccessful() else 1)
 '''

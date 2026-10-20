@@ -14,16 +14,32 @@ python3 -B -m unittest discover -v
 python3 -B audit_public.py
 ```
 
-In each participating OpenCode project, explicitly add a separate MCP server:
+In each participating OpenCode project, explicitly add a separate MCP server.
+For interoperability with an existing bridge that names this same session
+namespace `wsl`, configure that canonical node explicitly:
 
 ```bash
-opencode mcp add local_bridge -- python3 /srv/opencode-connect/local_mcp_server.py
+opencode mcp add local_bridge -- env OPENCODE_CONNECT_LOCAL_NODE=wsl python3 /srv/opencode-connect/local_mcp_server.py
 ```
 
 Replace the example absolute path with the actual checkout path. Preserve other
 MCP configuration; do not replace `laptop_bridge`. The server uses classic MCP,
 as does the existing cross-machine server. Reconnect the new server in `/mcps`
 and verify `connected` and `whoami`. This repository installs nothing automatically.
+
+The node name is identity, not transport selection. Even when it is `wsl` or
+`linux`, this server and its worker use only `LocalCommandTransport`, never SSH.
+Choose a node name already understood by a mixed-mode recipient only if it names
+the same session namespace. Names are explicit, case-sensitive simple identifiers;
+the default `local` preserves standalone use but cannot interoperate with a
+cross-machine MCP that recognizes only `linux` and `wsl`. No OS-based inference
+or fallback to another transport is performed.
+
+MCP and worker must use the same `OPENCODE_CONNECT_LOCAL_NODE` and `XDG_STATE_HOME`.
+For an isolated test queue, supply a dedicated private absolute `XDG_STATE_HOME`
+to both processes rather than using an operational queue. Both sessions can use
+one project configuration if its scope covers both; do not install duplicate
+servers or overwrite existing configuration without checking that scope.
 
 The local CLI uses `opencode api` and its normal local discovery/authentication
 context. Sessions in another account, WSL distribution, explicitly separate server,
@@ -43,7 +59,11 @@ select the first or most recently updated session. Directory and ID distinguish
 duplicate titles. No matching destination means no send and no session creation.
 
 Search and send are separate operations: `send` accepts a selected session ID or
-`local:ses_EXAMPLE` address, never a title. Renaming a session does not redirect
+`wsl:ses_EXAMPLE` address when configured as `wsl`, never a title. Bare IDs and
+`local:ses_EXAMPLE` are input shorthand for the configured node. Foreign node
+prefixes are rejected before insertion. All new messages persist and announce
+canonical node addresses; abbreviations are never reinterpreted at delivery.
+Renaming a session does not redirect
 the message. Destination existence is rechecked at delivery. Deleted or inaccessible
 destinations are retained for manual review, not replaced with another title match.
 Archived and child sessions are also rejected at delivery, even if the sender
@@ -67,8 +87,9 @@ to the `Reply address` in received messages. There is no automatic conversation
 loop or transcript forwarding. A separate local worker delivers queued messages:
 
 ```bash
-python3 -B local_bridge.py status
-python3 -B local_bridge.py relay
+OPENCODE_CONNECT_LOCAL_NODE=wsl python3 -B local_bridge.py diagnose
+OPENCODE_CONNECT_LOCAL_NODE=wsl python3 -B local_bridge.py status
+OPENCODE_CONNECT_LOCAL_NODE=wsl python3 -B local_bridge.py relay
 ```
 
 Review pending messages before starting the worker. **Delivery can trigger model
@@ -80,6 +101,50 @@ Local state uses `$XDG_STATE_HOME/opencode-connect/local/.state/` or the equival
 under `~/.local/state/`. MCP and CLI must run with the same account and state-home
 setting to share a queue. It is separate from the cross-machine bridge's state.
 The source tree remains free of operational configuration and queues.
+
+### Queue configuration contract
+
+A new empty queue is bound to a contract on its first insertion or claim:
+`schema_version`, `mode=local`, and `canonical_node`. Each subsequent insertion
+or claim checks that contract inside the same SQLite write transaction. A
+mismatch blocks the operation without changing pending messages. Different
+clients cannot silently adopt the same queue under different nodes. The worker
+uses its configured node, not a node inferred from queued text or an address.
+
+`diagnose` in MCP and CLI reports configured/stored contracts, compatibility, and
+the effective database path, without reading messages or consulting an API. An
+empty unbound queue reports a null stored contract; diagnosis does not bind it.
+These diagnostics contain private runtime paths: do not publish their output.
+`whoami` validates node configuration and caller metadata, but does not validate
+queue or service identity. Compare diagnostics before starting a worker.
+
+An older queue containing any messages but no contract is rejected for insertion
+and claim. This includes historical delivered messages: no automatic adoption,
+rewrite, migration, or reenqueue is attempted. Preserve that queue and its
+receipts for review; use a separately configured fresh test state location.
+`status` and `diagnose` remain available to inspect an incompatible queue.
+
+Stop old local workers and disconnect old local MCP processes before upgrading
+or changing configuration. Versions predating contract checks cannot enforce the
+new metadata; a new schema cannot retroactively make an old binary reject it.
+Do not stop agents, delete state, or reset ambiguous messages to force an upgrade.
+
+### Service selection limitation
+
+The contract compares configuration, **not service identity or authentication**.
+Use one queue per administratively shared local CLI discovery context: same
+account, environment, and agreed OpenCode configuration. The CLI executable is
+resolved from `PATH` and inherits process context; matching node names, database
+paths, binaries, versions, PIDs, or project directories do not prove that two
+processes discover the same API service. `/api/info` and session existence checks
+do not provide a stable service identity. Multiple independently discovered
+services require separate queues and are not technically isolated by this fix.
+No endpoint-selection flags, service UUIDs, or identity guarantees are invented.
+
+Canonical addresses allow the existing cross-machine MCP to understand a reply,
+but that MCP may still use its Linux relay. A mixed-mode reply is not proof of
+SSH-free delivery. Both sessions must use this local server and shared local
+worker to test a fully local round trip; replies remain explicit, never automatic.
 
 The worker checks local service availability before claiming a message. If that
 check fails, messages remain pending. If access fails after the check but during

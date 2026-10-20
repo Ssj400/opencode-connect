@@ -19,7 +19,8 @@ FILES = (
     "test_bridge.py", "test_collab.py", "test_core.py", "test_adapters.py", "test_chat.py", "test_public.py",
     "docs/decisions.md", "docs/release-checklist.md", "docs/architecture.md",
     "examples/opencode.jsonc.example", "skills/opencode-connect/SKILL.md",
-    "local_bridge.py", "local_mcp_server.py", "test_local.py", "docs/local-messaging.md",
+    "local_bridge.py", "local_mcp_server.py", "test_local.py", "test_local_identity.py",
+    "docs/local-messaging.md",
 )
 
 
