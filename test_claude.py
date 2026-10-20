@@ -136,6 +136,53 @@ class HookTests(ClaudeTestCase):
                     self.assertEqual(self.hook(event, payload), "")
         self.assertEqual(list(self.home.iterdir()), [])
 
+    def test_wake_exits_two_with_the_pointer_when_a_message_arrives(self):
+        box = self.mailbox()
+        arrivals = iter(["Arrived while idle"])
+
+        def sleep(seconds):
+            box.enqueue("ses_SOURCE", ADDRESS, next(arrivals))
+
+        errors = io.StringIO()
+        with contextlib.redirect_stderr(errors):
+            self.assertEqual(claude_hook.wake(ADDRESS, sleep=sleep), 2)
+        self.assertEqual(errors.getvalue(), claude_hook.POINTER.format(count=1))
+        self.assertEqual(self.hook("stop", {"session_id": SESSION}), "")  # Announced once, by the wake.
+
+    def test_wake_waits_for_messages_nobody_announced(self):
+        self.mailbox().enqueue("ses_SOURCE", ADDRESS, "Already announced")
+        self.assertTrue(self.hook("prompt", {"session_id": SESSION}))
+        polls = []
+
+        def sleep(seconds):
+            polls.append(seconds)
+            if len(polls) == 3:
+                raise InterruptedError("timeout")
+
+        with self.assertRaises(InterruptedError):
+            claude_hook.wake(ADDRESS, poll=0.5, sleep=sleep)
+        self.assertEqual(polls, [0.5, 0.5, 0.5])
+
+    def test_only_one_watcher_waits_per_session(self):
+        import fcntl
+        with open(claude_hook.spool() / f"wake-{SESSION}.lock", "a") as held:
+            fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            self.mailbox().enqueue("ses_SOURCE", ADDRESS, "Waiting")
+            self.assertEqual(claude_hook.wake(ADDRESS, sleep=self.fail), 0)
+        with contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(claude_hook.wake(ADDRESS, sleep=self.fail), 2)
+
+    def test_wake_command_line_exits_two_only_for_a_new_message(self):
+        command = [sys.executable, "-B", str(ROOT / "claude_hook.py"), "wake"]
+        self.mailbox().enqueue("ses_SOURCE", ADDRESS, "Secret plan")
+        result = subprocess.run(command, input=json.dumps({"session_id": SESSION}), capture_output=True,
+                                text=True, timeout=10, env=dict(os.environ))
+        self.assertEqual((result.returncode, result.stdout, result.stderr),
+                         (2, "", claude_hook.POINTER.format(count=1)))
+        result = subprocess.run(command, input="not json", capture_output=True, text=True, timeout=10,
+                                env=dict(os.environ))
+        self.assertEqual((result.returncode, result.stdout, result.stderr), (0, "", ""))
+
     def test_hook_command_line_stamps_and_exits_zero(self):
         payload = json.dumps({"session_id": SESSION, "tool_use_id": "toolu_CLI"})
         result = subprocess.run([sys.executable, "-B", str(ROOT / "claude_hook.py"), "pre-tool"], input=payload,

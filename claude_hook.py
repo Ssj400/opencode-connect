@@ -5,6 +5,8 @@ pre-tool  stamps each tool call with the calling session, keyed by its tool_use_
           the MCP server can recover the caller from the claudecode/toolUseId it receives.
 prompt    tells Claude how many messages are waiting for this session.
 stop      keeps Claude going once when new messages arrived during its turn.
+wake      runs as an asyncRewake hook: waits in the background and wakes the idle
+          session once per newly arrived message, until the hook's timeout ends it.
 
 Hooks never print message text, only a fixed pointer with a count. Malformed input or
 unavailable state is ignored, so a hook never breaks or steers the session.
@@ -12,6 +14,7 @@ unavailable state is ignored, so a hook never breaks or steers the session.
 
 import argparse
 import contextlib
+import fcntl
 import json
 import os
 from pathlib import Path
@@ -107,10 +110,26 @@ def unannounced(address, ids, root=None):
     return [message_id for message_id in ids if message_id not in known]
 
 
+def wake(address, root=None, poll=2.0, sleep=time.sleep):
+    """Exit 2 with the pointer once a message nobody announced is waiting. Claude Code
+    starts a watcher at every stop, so one lock per session lets only the first wait."""
+    with open(spool(root) / f"wake-{address.split(':', 1)[1]}.lock", "a") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return 0
+        while True:
+            ids = waiting(address, root)
+            if ids and unannounced(address, ids, root):
+                sys.stderr.write(POINTER.format(count=len(ids)))
+                return 2
+            sleep(poll)
+
+
 def main(argv=None, stdin=None):
     parser = argparse.ArgumentParser(description="Claude Code hook for opencode-connect; "
                                                  "reads the hook's JSON input on stdin.")
-    parser.add_argument("event", choices=("pre-tool", "prompt", "stop"))
+    parser.add_argument("event", choices=("pre-tool", "prompt", "stop", "wake"))
     args = parser.parse_args(argv)
     try:
         data = json.load(stdin or sys.stdin)
@@ -118,6 +137,8 @@ def main(argv=None, stdin=None):
         if args.event == "pre-tool":
             record(data["tool_use_id"], address)
             return 0
+        if args.event == "wake":
+            return wake(address)
         if args.event == "stop" and data.get("stop_hook_active"):
             return 0
         ids = waiting(address)
