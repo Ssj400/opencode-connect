@@ -90,5 +90,12 @@ Do not start `relay` or `relay --once` as a harmless diagnostic: they may delive
 pending tasks and consume model quota. SSH authentication belongs in the user's
 terminal. Never read internal credentials, disable SSH verification, or expose the API.
 
+Distinguish reconnecting SSH from deploying code. `connect` authenticates the
+reusable connection; it does not renew keys, install updates, or restart MCP.
+`deploy.py` copies managed files to WSL; a GitHub push alone does not update that
+installation. Deployment is not needed after every reconnect. After MCP code
+changes, reconnect only the affected server through `/mcps`. See the README's
+reconnection/deployment runbook; do not replace another installed variant blindly.
+
 Briefly report the destination, returned ID, observed state, and any dependency or
 blocker. Do not claim delivery for a queued message or completion for API acceptance.

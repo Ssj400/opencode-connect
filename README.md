@@ -138,6 +138,76 @@ cd opencode-connect
    **not the agents**. There is no daemon or automatic startup. `relay --once`
    also delivers pending messages: it is not a harmless health check. WSL does not run a relay.
 
+## Reconnecting versus deploying updates
+
+These are different operations. **Reconnecting restores access; deployment updates
+the installed code.** Neither operation renames sessions, changes permissions, or
+requires renewing SSH keys or certificates.
+
+| Operation | What it changes | When it is needed |
+| --- | --- | --- |
+| `git pull` | Source files in that checkout only | To download published changes; it does not update another machine |
+| `python3 bridge.py connect` | Opens an authenticated reusable SSH connection | When interactive authentication is needed after expiry, restart, or a network change |
+| `python3 bridge.py check` | Checks both local APIs; may start their local services | To verify access without generating responses |
+| `python3 deploy.py` | Copies managed code/docs to the configured WSL directory | After code updates, not after every SSH reconnect |
+| `/mcps` → reconnect `laptop_bridge` | Reloads that project's MCP process and tools | After changing MCP code or its installation path, on each affected machine |
+| `python3 collab.py relay` | Starts message delivery | When ready to deliver queued messages; this can trigger model usage |
+
+### Why SSH can need authentication again
+
+The current implementation uses an OpenSSH ControlMaster, a reusable authenticated
+connection. `ControlPersist=600` keeps it available for 10 minutes after its last
+client disconnects. This timeout does not expire your keys or credentials. Sleep,
+reboots, and network changes can also break the connection. A running relay makes
+regular SSH requests, so the connection is not simply idle for the whole workday.
+
+After it closes, OpenSSH can authenticate noninteractively if suitable credentials
+are already available. Otherwise a password-based setup needs authentication in
+your terminal again. Background tool calls use `BatchMode=yes` and cannot prompt
+for a password. An authentication failure can also mean a wrong account or SSH
+configuration, not just an expired connection. Do not ask an agent to handle passwords.
+
+From the installation you actually use, run:
+
+```bash
+python3 bridge.py connect
+python3 bridge.py check
+```
+
+If the host/IP changed, update the appropriate local configuration and independently
+verify the host identity. Never disable host-key checking to make reconnection work.
+If the installed code has not changed, **no deployment is needed**.
+
+### Applying a code update to the other machine
+
+Publishing or pushing a commit to GitHub does not replace files in an existing WSL
+installation, restart its MCP process, or start a relay. First coordinate a pause
+in bridge sends, let outstanding bridge tool calls finish, and stop only the relay,
+not the agents or the entire OpenCode service. Then update your local checkout,
+run the runtime unit tests, authenticate if needed, and deploy:
+
+```bash
+git pull --ff-only
+python3 -B -m unittest test_bridge test_collab test_core test_adapters test_chat
+python3 bridge.py connect
+python3 bridge.py check
+python3 deploy.py
+```
+
+The command sequence assumes an existing configured public-edition installation.
+Run full discovery and the export audit separately in a clean checkout/export:
+their privacy checks intentionally reject operational configuration and state.
+Deployment preserves runtime state and refuses unapproved remote edits; review any
+conflicts instead of deleting files or the manifest. Use `--install-config` only
+when explicitly installing/updating the private configuration as described in Setup.
+Do not deploy this public edition over a separate personal variant without a migration plan.
+
+On each affected machine, use `/mcps` in the relevant OpenCode project to disconnect
+and reconnect only `laptop_bridge`; verify `connected`. An agent can then use
+`whoami` without sending a message to check that the new tool is loaded. Review
+queue status before restarting the relay. Tools being loaded, code being deployed,
+SSH being available, and messages being delivered are separate states.
+
 ## Authorized use
 
 MCP provides `whoami`, `peers`, `status`, `send`, and `send_file`. Every calling

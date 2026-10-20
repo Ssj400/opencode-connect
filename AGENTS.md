@@ -23,6 +23,9 @@ any language; this policy does not restrict messages exchanged through the bridg
   destination sessions. Registration is a separate file-transfer requirement, not a chat gate.
 - `pending` does not mean delivered; `delivered` means API acceptance, not task completion.
 - Stale `sending` and `uncertain` states require human review, never automatic retries.
+- Distinguish source publication, SSH authentication, remote deployment, MCP reload,
+  and relay delivery. Never report an update as active remotely after only a push.
+  SSH reconnects do not require deploying unchanged code or rotating credentials.
 - Transfer only approved files staged in `outgoing/`, up to 1 MiB, without symlinks.
   Both source and destination sessions must be explicitly registered for files.
   Do not execute received files or overwrite destinations.
