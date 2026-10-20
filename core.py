@@ -87,14 +87,18 @@ class DeliveryAdapters:
 
 
 def resolve_target(peers: Mapping[str, Peer], job: Mapping[str, Any], *,
-                   addresses: AddressBook | None = None, origin_node: str | None = None) -> Peer:
+                   addresses: AddressBook | None = None,
+                   origin_node: str | frozenset[str] | set[str] | None = None) -> Peer:
+    """`origin_node` is the node, or set of nodes, that a queued source may belong to."""
     book = addresses or AddressBook(peers, {peer.node: opaque_session for peer in peers.values()})
     source = book.resolve(job["source"])
     target = book.resolve(job["target"])
     payload = job["payload"]
     modern = "source_address" in payload or "target_address" in payload
+    origins = None if origin_node is None else (
+        {origin_node} if isinstance(origin_node, str) else set(origin_node))
     if (payload["source_id"] != source.session or payload["target_id"] != target.session
-            or (origin_node is not None and source.node != origin_node)
+            or (origins is not None and source.node not in origins)
             or (modern and (payload.get("source_address") != book.address(source)
                             or payload.get("target_address") != book.address(target)))
             or (not modern and (source.node == target.node
@@ -133,7 +137,7 @@ def render_message(job: Mapping[str, Any], *, label: str = "Agent bridge",
 def deliver_message(job: Mapping[str, Any], peers: Mapping[str, Peer],
                     adapters_for: Callable[[str], DeliveryAdapters], *,
                     label: str = "Agent bridge", addresses: AddressBook | None = None,
-                    origin_node: str | None = None) -> dict[str, str]:
+                    origin_node: str | frozenset[str] | set[str] | None = None) -> dict[str, str]:
     book = addresses or AddressBook(peers, {peer.node: opaque_session for peer in peers.values()})
     target = resolve_target(peers, job, addresses=book, origin_node=origin_node)
     adapters = adapters_for(target.node)
