@@ -6,8 +6,8 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 from urllib.parse import parse_qs, urlsplit
 
-from core import BridgeError, relay_once
-from local_bridge import LocalMailbox, deliver_local, relay, session, state_root
+from core import BridgeError, NotSent, relay_once
+from local_bridge import LocalMailbox, deliver_local, local_relay_once, main, relay, session, state_root
 from local_mcp_server import call_tool, handle
 from opencode_adapter import OpenCodeAdapter
 
@@ -103,8 +103,49 @@ class LocalQueueTests(unittest.TestCase):
         self.api.call.side_effect = None
         self.api.call.return_value = {"data": None}
         outcome = relay_once(self.box, lambda job: deliver_local(job, self.adapter))
-        self.assertEqual(outcome["state"], "uncertain")
+        self.assertEqual(outcome["state"], "failed")
         self.api.call.assert_called_once_with("get", "/api/session/ses_TARGET")
+
+    def test_failed_target_check_is_not_ambiguous_and_never_retried(self):
+        for error in (BridgeError("GET timed out"), OSError("Service offline")):
+            self.box.enqueue("ses_SOURCE", "ses_TARGET", "Question")
+            self.api.call.side_effect = error
+            outcome = relay_once(self.box, lambda job: deliver_local(job, self.adapter))
+            self.assertEqual(outcome["state"], "failed")
+            self.assertIsNone(self.box.claim())
+        self.assertEqual(self.api.call.call_count, 2)
+        self.assertTrue(all(call.args[0] == "get" for call in self.api.call.call_args_list))
+
+    def test_service_outage_does_not_consume_pending_queue(self):
+        for _ in range(3):
+            self.box.enqueue("ses_SOURCE", "ses_TARGET", "Question")
+        self.api.call.side_effect = BridgeError("Service offline")
+        for _ in range(3):
+            with self.assertRaises(BridgeError):
+                local_relay_once(self.box, self.adapter)
+        self.assertEqual([row["state"] for row in self.box.status()], ["pending"] * 3)
+        self.api.call.assert_called_with("get", "/api/info")
+        self.api.call.side_effect = [{"version": "2.0.0"}, {"data": {"id": "ses_TARGET"}},
+                                     {"data": {"id": "inbox_EXAMPLE"}}]
+        self.assertEqual(local_relay_once(self.box, self.adapter)["state"], "delivered")
+        self.assertEqual(sum(row["state"] == "pending" for row in self.box.status()), 2)
+
+    def test_invalid_service_info_leaves_queue_pending(self):
+        self.box.enqueue("ses_SOURCE", "ses_TARGET", "Question")
+        self.api.call.side_effect = None
+        for info in (None, {}, {"version": 2}, {"version": "1.0.0"}):
+            self.api.call.return_value = info
+            with self.assertRaises(BridgeError):
+                local_relay_once(self.box, self.adapter)
+        self.assertEqual(self.box.status()[0]["state"], "pending")
+
+    def test_post_error_remains_uncertain_after_successful_service_check(self):
+        self.box.enqueue("ses_SOURCE", "ses_TARGET", "Question")
+        self.api.call.side_effect = [{"version": "2.0.0"}, {"data": {"id": "ses_TARGET"}},
+                                     BridgeError("POST timed out")]
+        self.assertEqual(local_relay_once(self.box, self.adapter)["state"], "uncertain")
+        self.assertIsNone(self.box.claim())
+        self.assertEqual(self.api.call.call_args.args[0], "post")
 
     def test_persistence_and_stale_sending(self):
         sent = self.box.enqueue("ses_SOURCE", "ses_TARGET", "Question")
@@ -122,7 +163,7 @@ class LocalQueueTests(unittest.TestCase):
             job = self.box.claim()
             self.api.call.side_effect = None
             self.api.call.return_value = {"data": {"id": "ses_TARGET", **extra}}
-            with self.assertRaises(BridgeError):
+            with self.assertRaises(NotSent):
                 deliver_local(job, self.adapter)
             self.api.call.assert_called_with("get", "/api/session/ses_TARGET")
         self.assertEqual(self.api.call.call_count, 3)
@@ -206,6 +247,15 @@ class LocalMcpTests(unittest.TestCase):
                 with self.assertRaises(BridgeError):
                     state_root()
         self.assertEqual(session("local:ses_EXAMPLE"), "ses_EXAMPLE")
+
+    def test_cli_sets_private_umask_before_creating_state(self):
+        with patch("local_bridge.os.umask") as mask, patch("sys.argv", ["local_bridge.py", "status"]), \
+                patch("local_bridge.state_root") as root, patch("local_bridge.LocalMailbox") as mailbox, \
+                patch("local_bridge.local_adapter"), patch("builtins.print"):
+            root.side_effect = lambda: mask.assert_called_once_with(0o077)
+            mailbox.return_value.status.return_value = []
+            self.assertEqual(main(), 0)
+            mask.assert_called_once_with(0o077)
 
 
 if __name__ == "__main__":

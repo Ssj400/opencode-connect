@@ -13,7 +13,8 @@ import uuid
 
 from collab import Mailbox
 from config import private_directory
-from core import AddressBook, BridgeError, DeliveryAdapters, deliver_message, relay_once
+from core import (AddressBook, BridgeError, DeliveryAdapters, NotSent,
+                  deliver_message, relay_once, resolve_target)
 from opencode_adapter import OpenCodeAdapter, OpenCodeCli
 from transports import LocalCommandTransport
 
@@ -61,24 +62,39 @@ class LocalMailbox(Mailbox):
 
 
 def deliver_local(job, adapter):
-    if job["kind"] != "message" or job["priority"] != "queue":
-        raise BridgeError("The local bridge supports normal text messages only.")
-    book = AddressBook({}, {"local": OpenCodeAdapter.session_id})
-    if book.resolve(job["source"]) == book.resolve(job["target"]):
-        raise BridgeError("Self delivery is not supported.")
-    # Recheck existence without reading the target conversation or changing permissions.
-    target = book.resolve(job["target"])
-    response = adapter.api.call("get", f"/api/session/{target.session}")
-    if (not isinstance(response, dict) or not isinstance(response.get("data"), dict)
-            or response["data"].get("id") != target.session):
-        raise BridgeError("The destination session could not be verified.")
-    info = response["data"]
-    timestamps = info.get("time", {})
-    if (not isinstance(timestamps, dict) or info.get("parentID")
-            or timestamps.get("archived") is not None):
-        raise BridgeError("The destination must be an unarchived root session.")
+    # Only this preflight is known to have no delivery side effects. Do not wrap POSTs.
+    try:
+        if job["kind"] != "message" or job["priority"] != "queue":
+            raise BridgeError("The local bridge supports normal text messages only.")
+        book = AddressBook({}, {"local": OpenCodeAdapter.session_id})
+        target = resolve_target({}, job, addresses=book, origin_node="local")
+        if book.resolve(job["source"]) == target:
+            raise BridgeError("Self delivery is not supported.")
+        if "queue" not in adapter.supported_deliveries:
+            raise BridgeError("The local adapter does not support queue delivery.")
+        # Recheck existence without reading conversations or changing permissions.
+        response = adapter.api.call("get", f"/api/session/{target.session}")
+        if (not isinstance(response, dict) or not isinstance(response.get("data"), dict)
+                or response["data"].get("id") != target.session):
+            raise BridgeError("The destination session could not be verified.")
+        info = response["data"]
+        timestamps = info.get("time", {})
+        if (not isinstance(timestamps, dict) or info.get("parentID")
+                or timestamps.get("archived") is not None):
+            raise BridgeError("The destination must be an unarchived root session.")
+    except (BridgeError, KeyError, TypeError, ValueError, OSError) as exc:
+        raise NotSent(str(exc)) from exc
     return deliver_message(job, {}, lambda node: DeliveryAdapters(adapter),
                            addresses=book, origin_node="local")
+
+
+def local_relay_once(box, adapter):
+    # Leave pending messages untouched while service discovery or access fails.
+    info = adapter.api.call("get", "/api/info")
+    if (not isinstance(info, dict) or not isinstance(info.get("version"), str)
+            or not info["version"].startswith("2.")):
+        raise BridgeError("The local OpenCode V2 service is unavailable.")
+    return relay_once(box, lambda job: deliver_local(job, adapter))
 
 
 def relay(box, adapter, *, once=False):
@@ -91,7 +107,14 @@ def relay(box, adapter, *, once=False):
         except BlockingIOError as exc:
             raise BridgeError("A local relay is already running.") from exc
         while True:
-            outcome = relay_once(box, lambda job: deliver_local(job, adapter))
+            try:
+                outcome = local_relay_once(box, adapter)
+            except (BridgeError, OSError) as exc:
+                if once:
+                    raise
+                print(json.dumps({"state": "unavailable", "error": str(exc)}), flush=True)
+                time.sleep(1)
+                continue
             if outcome:
                 print(json.dumps(outcome), flush=True)
             if once:
@@ -100,6 +123,7 @@ def relay(box, adapter, *, once=False):
 
 
 def main():
+    os.umask(0o077)
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
     find = commands.add_parser("find", help="Search session titles; never reads conversations.")

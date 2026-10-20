@@ -81,11 +81,22 @@ under `~/.local/state/`. MCP and CLI must run with the same account and state-ho
 setting to share a queue. It is separate from the cross-machine bridge's state.
 The source tree remains free of operational configuration and queues.
 
-Messages follow `pending -> sending -> delivered | uncertain`. `delivered` means
+The worker checks local service availability before claiming a message. If that
+check fails, messages remain pending. If access fails after the check but during
+the destination GET, the claimed message becomes failed, not uncertain.
+
+Messages follow `pending -> sending -> delivered | failed | uncertain`. `delivered` means
 API acceptance, not a completed task. Queue delivery uses OpenCode's normal queue
 semantics; it does not promise immediate handling by a busy session. A failed or
 timed-out request may already have been accepted. Neither uncertain messages nor
-stale sending messages are retried automatically. Preserve state for manual review.
+stale sending messages are retried automatically. Proven pre-send failures (for
+example, a deleted or archived destination) are recorded as `failed`, also without
+automatic retries. Only preflight checks use this distinction: errors during or
+after the POST remain `uncertain`. Preserve state for manual review.
+
+The optional `time.archived` numeric field is defined by the published V2
+`Session.Info` schema. Offline fixtures cover it; no real session is archived by
+the tests, and live behavior with archived sessions remains unverified.
 
 ## Boundaries
 
