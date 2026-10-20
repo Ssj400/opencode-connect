@@ -52,6 +52,7 @@ FILES = (
     # Federated courier between people
     # Claude Code harness
     "claude_hook.py",
+    "claude_mcp_server.py",
     "test_claude.py",
 )
 

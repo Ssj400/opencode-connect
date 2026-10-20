@@ -1,10 +1,11 @@
-"""Claude Code harness: identity stamps and pointer hooks. Offline; no Claude Code needed."""
+"""Claude Code harness: identity stamps, pointer hooks and the MCP server. Offline; no Claude Code needed."""
 
 import contextlib
 import io
 import json
 import os
 from pathlib import Path
+import sqlite3
 import stat
 import subprocess
 import sys
@@ -15,6 +16,7 @@ from unittest.mock import patch
 import uuid
 
 import claude_hook
+import claude_mcp_server
 from core import BridgeError
 from local_bridge import LocalMailbox, state_root
 
@@ -140,6 +142,84 @@ class HookTests(ClaudeTestCase):
                                 capture_output=True, text=True, timeout=10, env=dict(os.environ))
         self.assertEqual((result.returncode, result.stdout, result.stderr), (0, "", ""))
         self.assertEqual(claude_hook.consume("toolu_CLI"), ADDRESS)
+
+
+class ClaudeServerTests(ClaudeTestCase):
+    def call(self, name, tool_use="toolu_CALL", stamp=True, **arguments):
+        if stamp:
+            claude_hook.record(tool_use, ADDRESS)
+        request = {"id": 1, "method": "tools/call", "params": {
+            "name": name, "arguments": arguments, "_meta": {"claudecode/toolUseId": tool_use}}}
+        result = claude_mcp_server.handle(request)["result"]
+        if result.get("isError"):
+            raise BridgeError(result["content"][0]["text"])
+        return json.loads(result["content"][0]["text"])
+
+    def test_identity_comes_only_from_the_hook_stamp(self):
+        self.assertEqual(self.call("whoami"), {"address": ADDRESS})
+        with self.assertRaisesRegex(BridgeError, "PreToolUse hook"):
+            self.call("whoami", stamp=False)
+        with self.assertRaisesRegex(BridgeError, "tool use ID"):
+            claude_mcp_server.call_claude_tool({"name": "whoami", "arguments": {}})
+        with self.assertRaises(BridgeError):  # Arguments can never name the source.
+            self.call("send", to="ses_TARGET", text="Hello", source="ses_OTHER")
+
+    def test_send_queues_from_this_session(self):
+        sent = self.call("send", to="ses_TARGET", text="From Claude")
+        job = self.mailbox().claim()
+        self.assertEqual((job["id"], job["source"], job["target"]), (sent["id"], ADDRESS, "local:ses_TARGET"))
+
+    def test_receive_hands_over_one_message_and_acknowledges_it(self):
+        box = self.mailbox()
+        first = box.enqueue("ses_SOURCE", ADDRESS, "First question")
+        box.enqueue("ses_SOURCE", ADDRESS, "Second question")
+        other = box.enqueue("ses_SOURCE", "claude:" + str(uuid.UUID(int=8)), "Not for this session")
+        received = self.call("receive")
+        self.assertEqual((received["id"], received["remaining"]), (first["id"], 1))
+        self.assertIn("First question", received["message"])
+        self.assertIn("Reply address: local:ses_SOURCE", received["message"])
+        self.assertEqual(json.loads(box.get(first["id"])["result"]), {"received_by": ADDRESS})
+        self.assertEqual((box.get(first["id"])["state"], box.get(other["id"])["state"]), ("delivered", "pending"))
+        self.assertEqual(self.call("receive", tool_use="toolu_2")["remaining"], 0)
+        self.assertEqual(self.call("receive", tool_use="toolu_3"), {"message": None, "remaining": 0})
+        with self.assertRaises(BridgeError):
+            self.call("receive", tool_use="toolu_4", limit=5)
+
+    def test_receive_quotes_remote_people(self):
+        box = self.mailbox()
+        held = box.insert_inbound("person:alice", "Line one\nLine two", remote_key="key-1")
+        box.approve_inbound(held["id"], ADDRESS)
+        message = self.call("receive")["message"]
+        self.assertIn("Quoted text from person:alice:\n> Line one\n> Line two", message)
+        self.assertIn("Reply address: person:alice", message)
+
+    def test_a_failed_acknowledgment_leaves_the_message_pending(self):
+        box = self.mailbox()
+        sent = box.enqueue("ses_SOURCE", ADDRESS, "Keep me")
+        with patch.object(LocalMailbox, "mark", side_effect=sqlite3.OperationalError("disk I/O error")):
+            with self.assertRaisesRegex(BridgeError, "disk I/O error"):
+                self.call("receive")
+        self.assertEqual(box.get(sent["id"])["state"], "pending")
+
+    def test_a_message_rerouted_after_enqueue_is_failed_not_shown(self):
+        box = self.mailbox()
+        sent = box.enqueue("ses_SOURCE", ADDRESS, "Tampered")
+        payload = dict(box.get(sent["id"])["payload"], target_address="claude:" + str(uuid.UUID(int=8)))
+        with box.transaction():
+            box.db.execute("UPDATE messages SET payload=? WHERE id=?", (json.dumps(payload), sent["id"]))
+        received = self.call("receive")
+        self.assertEqual((received["id"], received["state"], received["remaining"]), (sent["id"], "failed", 0))
+        self.assertNotIn("message", received)
+        self.assertEqual(box.get(sent["id"])["state"], "failed")
+
+    def test_protocol_lists_the_local_tools_and_receive(self):
+        tools = claude_mcp_server.handle({"id": 1, "method": "tools/list"})["result"]["tools"]
+        self.assertEqual({tool["name"] for tool in tools},
+                         {"whoami", "find_sessions", "send", "status", "diagnose", "receive"})
+        info = claude_mcp_server.handle({"id": 2, "method": "initialize", "params": {}})["result"]
+        self.assertEqual(info["serverInfo"]["name"], "opencode-connect-claude")
+        self.assertIn("PreToolUse hook", info["instructions"])
+        self.assertIsNone(claude_mcp_server.handle({"method": "notifications/initialized"}))
 
 
 if __name__ == "__main__":

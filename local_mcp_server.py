@@ -3,6 +3,7 @@
 
 import json
 import os
+import sqlite3
 import sys
 
 from core import BridgeError
@@ -86,7 +87,7 @@ def handle(request, **dependencies):
         try:
             result = call_tool(request.get("params", {}), **dependencies)
             payload = {"content": [{"type": "text", "text": json.dumps(result, ensure_ascii=False)}]}
-        except (BridgeError, KeyError, TypeError, ValueError, OSError) as exc:
+        except (BridgeError, KeyError, TypeError, ValueError, OSError, sqlite3.Error) as exc:
             payload = {"isError": True, "content": [{"type": "text", "text": str(exc)}]}
         return {"jsonrpc": "2.0", "id": request["id"], "result": payload}
     reply = bridge_handle(request)

@@ -1,6 +1,7 @@
 """Offline local session discovery, queue persistence and MCP tests."""
 
 import json
+import sqlite3
 import tempfile
 import time
 import unittest
@@ -311,6 +312,13 @@ class LocalMcpTests(unittest.TestCase):
             self.assertEqual(box.claim("person:")["payload"]["reply_to"], held["id"])
             with self.assertRaisesRegex(BridgeError, "delivered to this session"):
                 call_tool(self.params("send", to="person:bob", text="Answer", reply_to=held["id"]), root=root)
+
+    def test_a_database_error_is_a_tool_error_not_a_crash(self):
+        with tempfile.TemporaryDirectory() as root, \
+                patch.object(LocalMailbox, "enqueue", side_effect=sqlite3.OperationalError("database is locked")):
+            reply = handle({"id": 1, "method": "tools/call", "params": self.params(
+                "send", to="ses_TARGET", text="Question")}, root=root)
+        self.assertEqual(reply["result"], {"isError": True, "content": [{"type": "text", "text": "database is locked"}]})
 
     def test_extra_capabilities_rejected(self):
         for name, args in (("send_file", {}), ("send", {"urgent": True}), ("whoami", {"source": "ses_OTHER"})):
