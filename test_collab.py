@@ -13,9 +13,33 @@ from unittest.mock import Mock, patch
 from bridge import BridgeError
 import collab
 import mcp_server
+from transports import CommandError
 
 
 class CollabTests(unittest.TestCase):
+    def test_remote_rpc_decodes_its_own_error_schema(self):
+        message = "Insecure private directory: /srv/example"
+        error = CommandError(1, json.dumps({"_tag": "BridgeError", "message": message}).encode(),
+                             b"** WARNING: post-quantum key exchange unavailable.\n")
+        with patch("collab.endpoint") as endpoint:
+            endpoint.return_value.remote_exec.side_effect = error
+            with self.assertRaises(BridgeError) as caught:
+                collab.remote_rpc(self.cfg, {"op": "status"})
+        self.assertEqual(str(caught.exception), message)
+        self.assertIs(caught.exception.__cause__, error)
+        endpoint.return_value.remote_exec.assert_called_once()
+
+    def test_remote_rpc_preserves_unrecognized_command_errors(self):
+        for stdout in (b"not JSON", b'[]', b'{"_tag":"Other","message":"example"}',
+                       b'{"_tag":"BridgeError","message":3}', b'\xff'):
+            with self.subTest(stdout=stdout), patch("collab.endpoint") as endpoint:
+                error = CommandError(1, stdout, b"** advisory\n Permission denied.\n")
+                endpoint.return_value.remote_exec.side_effect = error
+                with self.assertRaises(CommandError) as caught:
+                    collab.remote_rpc(self.cfg, {"op": "status"})
+                self.assertIs(caught.exception, error)
+                self.assertEqual(str(caught.exception), "Permission denied.")
+
     def setUp(self):
         self.tmp = TemporaryDirectory(prefix="connect-test-")
         self.addCleanup(self.tmp.cleanup)

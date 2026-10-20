@@ -13,7 +13,7 @@ from types import SimpleNamespace
 
 from config import BridgeError, load_config, validate_ssh
 from opencode_adapter import OpenCodeCli, check, probe_api
-from transports import LocalCommandTransport, WindowsWslSshTransport, tcp_probe
+from transports import LocalCommandTransport, WindowsWslSshTransport, tcp_probe, without_ssh_advisories
 
 ROOT = Path(__file__).resolve().parent
 OK, WARN, FAIL, SKIP = "OK", "WARN", "FAIL", "SKIP"
@@ -65,9 +65,7 @@ class Endpoint:
 
 def ssh_problem(error):
     """Drop OpenSSH advisories (such as post-quantum warnings) so the actual failure shows."""
-    lines = [line.strip() for line in str(error).splitlines()
-             if line.strip() and not line.lstrip().startswith("**")]
-    return " ".join(lines)[:300] or "unknown error"
+    return without_ssh_advisories(error)[:300] or "unknown error"
 
 
 def failure_kind(problem):
