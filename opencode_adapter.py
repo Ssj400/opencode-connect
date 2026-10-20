@@ -1,6 +1,7 @@
 """OpenCode V2 CLI and session adapter; no SSH or operating-system selection."""
 
 import json
+import re
 from typing import Any, Protocol, TYPE_CHECKING
 
 from core import BridgeError
@@ -34,7 +35,21 @@ class OpenCodeAdapter:
     def __init__(self, api: JsonApi):
         self.api = api
 
+    @staticmethod
+    def session_id(value):
+        if not isinstance(value, str) or not re.fullmatch(r"ses_[A-Za-z0-9_-]{1,128}", value):
+            raise BridgeError("Invalid OpenCode session ID.")
+        return value
+
+    @classmethod
+    def caller_session(cls, params):
+        metadata = params.get("_meta")
+        if not isinstance(metadata, dict) or not metadata.get("ai.opencode/sessionID"):
+            raise BridgeError("Missing ai.opencode/sessionID metadata; source identity is never guessed.")
+        return cls.session_id(metadata["ai.opencode/sessionID"])
+
     def send_message(self, session, *, message_id, text, delivery):
+        self.session_id(session)
         if delivery not in self.supported_deliveries:
             raise BridgeError("OpenCode does not support the requested delivery mode.")
         response = self.api.call("post", f"/api/session/{session}/prompt",

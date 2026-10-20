@@ -23,7 +23,9 @@ transports.py: local processes or Windows SSH -> WSL
 
 - `core.py` uses only `dataclasses` and `typing`. It does not read configuration,
   access files, execute commands, know API routes, or recognize a harness session-ID
-  prefix. A peer has an opaque session identifier and a node identifier.
+  prefix. A peer has an opaque session identifier and a node identifier. `AddressBook`
+  accepts optional shortcuts and direct addresses only for explicitly paired nodes;
+  harness-specific session validators are injected by application wiring.
 - `OpenCodeAdapter` maps delivery and session creation to OpenCode V2 endpoints.
   `OpenCodeCli` maps API requests to the existing `opencode api` command. API error
   interpretation belongs here, not in generic JSON transport.
@@ -55,11 +57,19 @@ avoid overwriting, and never execute content. Transfer happens before notificati
 
 ## Preserved behavior
 
-- Same routes configuration, MCP tools, SQLite schema, IDs, and CLI commands.
+- Compatible routes structure, existing MCP tools, SQLite schema, IDs, and CLI commands.
+  Text chat now permits unregistered sessions; shortcuts remain optional and `whoami`
+  exposes the caller's canonical reply address. Files still require registered endpoints.
 - Existing Linux -> Windows SSH -> WSL topology; no migration of personal state.
 - Same OpenCode message envelope, queue/steer values, and ask permissions for new sessions.
 - Ambiguous sends are not retried. Acceptance does not imply task completion.
 - No daemon, implicit installation, automatic responses, or permission escalation.
+
+New queued messages pin canonical source and target addresses. Delivery checks these
+snapshots against resolved routes and the actual mailbox node. Older alias-only
+records retain their original cross-node checks. File eligibility is rechecked at
+delivery, and a text message cannot smuggle a file payload. Chat-only scope is not
+an enforced receiving-agent sandbox; existing harness permissions remain in force.
 
 ## Next adapters
 

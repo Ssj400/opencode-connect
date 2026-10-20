@@ -12,7 +12,10 @@ controls the bridge. Do not expose this RPC or MCP server as a public or multi-u
 
 ## Implemented protections and limitations
 
-- Only registered aliases are accepted; paths and usernames are validated before transport.
+- Chat accepts shortcuts and exact session addresses on paired nodes. Paths, usernames,
+  and OpenCode session IDs are validated; callers cannot name arbitrary remote hosts.
+- Both file endpoints require explicit registration at enqueue and delivery. A newly
+  permitted chat session does not inherit permission to transfer files or execute actions.
 - JSON travels over stdin; messages and paths are not interpolated into Windows shell commands.
 - Host verification stays enabled; internal OpenCode credentials are never copied.
 - The control socket lives in a private user directory, not a shared temporary directory.
@@ -30,6 +33,9 @@ controls the bridge. Do not expose this RPC or MCP server as a public or multi-u
 - There is no automatic reconciliation of `sending`/`uncertain` states or agent cancellation.
 - Existing session permissions remain in force. `create-session` requests `ask`
   permissions; it neither enables tools automatically nor starts model generation.
+- OpenCode's prompt endpoint can activate the receiving session with its existing tools.
+  Chat scope instructions are not an enforced text-only sandbox. Use trusted paired
+  accounts and do not present this prototype as cross-user permission isolation.
 - Deployment checks remote changes against a manifest and hashes. Files are replaced
   atomically one at a time, not as a transaction across the entire tree. Partial
   failures can require manual review. Never delete the manifest to force an update.

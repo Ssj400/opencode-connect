@@ -19,6 +19,7 @@
 - [x] Verify that the export does not contain an operational `routes.json`.
 - [x] Use English throughout documentation, instructions, comments, and runtime messages.
 - [x] Separate the delivery core, OpenCode adapter, and command transports with isolated tests.
+- [x] Test any-session text chat, canonical replies, route pinning, and separate file eligibility.
 
 ## Future integration — NOT verified in this edition
 

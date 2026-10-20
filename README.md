@@ -1,6 +1,7 @@
 # OpenCode Connect
 
-Explicit messaging and file transfers between registered OpenCode V2 sessions on two machines.
+Explicit messaging between OpenCode V2 sessions on paired machines, with separately
+authorized file transfers. Text chat does not require registering each session.
 **Linux → Windows SSH → WSL**; the Linux relay also collects messages from WSL
 and delivers them to Linux. No inbound SSH server is required on Linux. This is
 not a universal remote service or an automatic agent conversation loop.
@@ -66,12 +67,14 @@ cd opencode-connect
    `192.0.2.10` is an RFC5737 documentation address, not a working host. Example
    directories are placeholders; they are only created by an explicit deployment.
 
-   Register only user-selected sessions in `peers`, using their exact `side` and
-   `sessionID`. Do not read conversations to discover sessions or register every
-   session automatically. At least one session per machine is required; aliases
-   do not have to be named `linux` and `wsl`. The `ses_REPLACE_*` placeholders are
-   intentionally rejected until replaced. Unknown fields and relative paths are
-   rejected. Scripts read only the adjacent `routes.json`, not parent directories.
+   Leave `peers` empty for text-only chat. Each session can obtain its address through
+   `whoami` and send to `linux:ses_ID` or `wsl:ses_ID`, including sessions on the same
+   machine. These addresses name sessions on the paired nodes, not arbitrary hosts.
+   You may add `peers` shortcuts with exact `side` and `sessionID` values. Both file
+   endpoints must be explicitly registered there before file transfer; chat alone
+   does not grant file permission. Do not read conversations to discover IDs.
+   Unknown fields, relative paths, and unresolved session placeholders are rejected.
+   Scripts read only the adjacent `routes.json`, not parent directories.
 
 3. Verify the host's identity independently, then authenticate from your terminal.
    Never give the assistant your password or PIN, or save them in project files:
@@ -137,28 +140,39 @@ cd opencode-connect
 
 ## Authorized use
 
-MCP provides `peers`, `status`, `send`, and `send_file`. The calling session must be
-registered; OpenCode supplies its ID through request metadata. It is not an
-argument for the model to invent. See the [skill](skills/opencode-connect/SKILL.md)
+MCP provides `whoami`, `peers`, `status`, `send`, and `send_file`. Every calling
+session gets its identity from mandatory OpenCode request metadata, without prior
+registration. It is not an argument for the model to invent. `whoami` returns an
+exact reply address; `peers` lists optional shortcuts, not every session. Messages
+include their source's reply address. See the [skill](skills/opencode-connect/SKILL.md)
 for the operating workflow.
 
 Equivalent CLI commands, using example aliases:
 
 ```bash
-python3 collab.py send --source linux --to wsl --text 'Explicitly authorized task'
-python3 collab.py send --source linux --to wsl --text 'Authorized urgent blocker' --urgent
+python3 collab.py send --source linux:ses_SOURCE --to wsl:ses_TARGET --text 'Authorized conversation'
+python3 collab.py send --source linux:ses_SOURCE --to wsl:ses_TARGET --text 'Authorized urgent blocker' --urgent
 python3 collab.py status
 ```
 
-On WSL, use `--source wsl --to linux`. Normal delivery uses `queue`; `--urgent`
+Replace these example session IDs with actual addresses; configured shortcuts also work.
+On WSL, reverse the source and destination nodes. Normal delivery uses `queue`; `--urgent`
 uses `steer` for explicitly authorized urgent notices. It does not guarantee
 immediate interruption of blocked tools. Do not automatically forward responses
 or reply to acknowledgments. Existing permissions and Plan mode remain in force.
 `cancel-pending ID` cancels only a local message that has not been sent.
 
+Chat access does not authorize control, command execution, or file sharing. These
+instructions do not technically sandbox the receiving agent: the OpenCode prompt
+endpoint can activate a session with its existing permissions and tools. No tools
+or permissions are enabled by this change. Use only trusted, owner-approved paired nodes.
+
 For files, stage only an approved file in `outgoing/` (create the directory with
 `mkdir -m 700 outgoing` if needed). Use a simple filename, no symbolic links, and
 a maximum size of 1 MiB. Do not copy secrets. Send it with:
+
+Both sessions must also have explicit entries in `peers`; file eligibility is checked
+at enqueue and delivery. The following command assumes configured `linux`/`wsl` shortcuts:
 
 ```bash
 python3 collab.py send --source linux --to wsl --text 'Approved file' --file example.txt
@@ -186,7 +200,8 @@ again after restart. `uncertain` messages are not retried either. Review them
 manually with the user, preserving IDs and state. Never delete SQLite to clear a queue.
 
 - MCP disconnected: check Python/script paths, project configuration, and `/mcps`.
-- Unregistered session: confirm the current ID and update both configuration files.
+- Unknown chat destination: obtain its exact address; registration is not needed for text.
+- File registration error: explicitly register both file endpoints, only with authorization.
 - Pending delivery: check SSH and the relay; consider which tasks starting it would deliver.
 - Expired SSH connection: authenticate in your terminal using `connect`; do not send passwords.
 - A route changed after enqueue: review it before attempting any new delivery.

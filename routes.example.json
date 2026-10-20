@@ -1,9 +1,6 @@
 {
   "side": "linux",
-  "peers": {
-    "linux": {"side": "linux", "sessionID": "ses_REPLACE_LINUX"},
-    "wsl": {"side": "wsl", "sessionID": "ses_REPLACE_WSL"}
-  },
+  "peers": {},
   "ssh": {
     "host": "192.0.2.10",
     "ssh_user": "Example User",

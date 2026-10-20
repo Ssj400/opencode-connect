@@ -22,8 +22,10 @@ compatibility: OpenCode V2, MCP laptop_bridge, Linux coordinator, Windows OpenSS
    repository and follow its README; a GitHub URL is not an HTTP skill catalog.
 3. Check that the configured MCP server is available. The recommended alias is
    `laptop_bridge`; if missing, ask for the actual alias. Do not guess tool names.
-4. Query `peers` to verify explicitly registered session aliases. MCP metadata
-   identifies the source session; do not impersonate it or pass its ID as an argument.
+4. Use `whoami` to obtain this session's exact reply address from MCP metadata.
+   Text chat requires no session registration. Send to an agreed `linux:ses_ID` or
+   `wsl:ses_ID` address, or use an optional shortcut from `peers`. Do not guess a
+   destination, impersonate a source, or pass a source ID as a tool argument.
 
 For assistants belonging to different people, distinguish a question from a task.
 Check which project and information both parties agreed to share. Do not infer
@@ -46,10 +48,16 @@ In Code Mode, once the catalog confirms this alias:
 
 ```javascript
 return await tools.laptop_bridge.send({
-  to: "wsl",
+  to: "wsl:ses_TARGET",
   text: "Review only the agreed module and report findings; do not modify files."
 });
 ```
+
+Replace the example destination with the exact address supplied by the other
+session. Received messages include a `Reply address`; use it only when a response
+is needed. Same-node chat is allowed. Nodes remain limited to the paired machines.
+No tools or control permissions are granted by chat, and the receiving session is
+not technically sandboxed to text-only behavior by this prototype.
 
 Use `urgent: true` (steer) only for a user-authorized genuine urgency or blocker.
 It does not guarantee interruption of blocked tools and never cancels an agent.
@@ -58,7 +66,9 @@ authorized independent work instead of polling for an answer.
 
 ## Files
 
-Confirm authorization for both the file and destination. Stage only that file in
+Confirm authorization for both the file and destination. Both source and destination
+sessions must also be explicitly registered; chat access alone is insufficient.
+Stage only that file in
 the configured installation's `outgoing/`, using a simple filename without symlinks,
 up to 1 MiB. Check for secrets; the filename alone does not guarantee safety.
 Use `send_file` with `to`, `text`, `filename`, and urgency only when appropriate.

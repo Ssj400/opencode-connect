@@ -69,8 +69,8 @@ class CollabTests(unittest.TestCase):
             reopened.db.close()
 
     def test_validate_peers_and_size(self):
-        for source, target, text in [("ses_unknown", "wsl", "x"),
-                                     ("ses_local", "linux", "x"),
+        for source, target, text in [("invalid", "wsl", "x"),
+                                     ("ses_local", "unknown:ses_example", "x"),
                                      ("ses_local", "missing", "x"),
                                      ("ses_local", "wsl", "x" * 12001)]:
             with self.assertRaises(BridgeError):

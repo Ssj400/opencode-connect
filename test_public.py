@@ -69,9 +69,9 @@ class PublicTests(unittest.TestCase):
             self.assertFalse(any(isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == "chat"
                                  for n in ast.walk(tree)))
 
-    def test_example_requires_session_replacement(self):
-        with self.assertRaisesRegex(config.BridgeError, "placeholders"):
-            config.validate_config(json.loads((ROOT / "routes.example.json").read_text()))
+    def test_example_does_not_require_session_registration(self):
+        example = json.loads((ROOT / "routes.example.json").read_text())
+        self.assertEqual(config.validate_config(example)["peers"], {})
 
     def test_skill_links_and_metadata(self):
         skill = ROOT / "skills/opencode-connect/SKILL.md"
@@ -104,7 +104,7 @@ class PublicTests(unittest.TestCase):
 
     def test_cli_help_is_in_english(self):
         cases = [("bridge.py", [], "transport"),
-                 ("collab.py", ["send"], "Alias of the registered source session"),
+                 ("collab.py", ["send"], "Local session alias or node:ses_ID"),
                  ("deploy.py", [], "Explicitly copy routes.json")]
         for script, arguments, expected in cases:
             with self.subTest(script=script):
@@ -131,7 +131,7 @@ try: config.load_config(root)
 except config.BridgeError: pass
 else: raise AssertionError("unexpected configuration")
 assert mcp_server.handle({"id":1,"method":"initialize"})["result"]["serverInfo"]["name"] == "opencode-connect"
-suite=unittest.defaultTestLoader.loadTestsFromNames(["test_bridge", "test_collab", "test_core", "test_adapters"])
+suite=unittest.defaultTestLoader.loadTestsFromNames(["test_bridge", "test_collab", "test_core", "test_adapters", "test_chat"])
 result=unittest.TextTestRunner(verbosity=0).run(suite)
 sys.exit(0 if result.wasSuccessful() else 1)
 '''

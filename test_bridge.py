@@ -57,8 +57,7 @@ class ConfigTests(unittest.TestCase):
         with self.assertRaises(config.BridgeError):
             config.validate_config(cfg)
         del cfg["peers"]["duplicate"]; del cfg["peers"]["wsl"]
-        with self.assertRaises(config.BridgeError):
-            config.validate_config(cfg)
+        self.assertEqual(config.validate_config(cfg), cfg)
 
     def test_missing_config_is_not_inherited(self):
         with TemporaryDirectory() as folder:

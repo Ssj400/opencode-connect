@@ -18,7 +18,7 @@ import uuid
 
 from bridge import BridgeError, Endpoint
 from config import load_config, validate_config, private_directory
-from core import DeliveryAdapters, Peer, deliver_message, relay_once
+from core import AddressBook, DeliveryAdapters, Peer, deliver_message, relay_once
 from opencode_adapter import OpenCodeAdapter
 
 ROOT = Path(__file__).resolve().parent
@@ -29,6 +29,11 @@ STATES = {"pending", "sending", "delivered", "uncertain", "failed", "cancelled"}
 
 def settings(root=ROOT):
     return load_config(root)
+
+
+def address_book(cfg):
+    peers = {alias: Peer(peer["side"], peer["sessionID"]) for alias, peer in cfg["peers"].items()}
+    return AddressBook(peers, {side: OpenCodeAdapter.session_id for side in ("linux", "wsl")})
 
 
 def endpoint(cfg, side):
@@ -64,18 +69,19 @@ class Mailbox:
 
     def enqueue(self, source_id, target, text, urgent=False, filename=None):
         cfg = settings(self.root)
+        book = address_book(cfg)
+        source = Peer(cfg["side"], OpenCodeAdapter.session_id(source_id))
         sources = [name for name, p in cfg["peers"].items()
                    if p["side"] == cfg["side"] and p["sessionID"] == source_id]
-        if not sources:
-            raise BridgeError("The source session is not registered on this machine.")
-        peer = cfg["peers"].get(target)
-        if not peer or peer["side"] == cfg["side"]:
-            raise BridgeError("The target is not registered or belongs to the same side.")
+        peer = book.resolve(target)
+        if filename is not None and (not book.registered(source) or not book.registered(peer)):
+            raise BridgeError("File transfer requires explicitly registered source and destination sessions.")
         if not isinstance(text, str) or not text.strip() or len(text) > MAX_TEXT:
             raise BridgeError(f"Messages must contain between 1 and {MAX_TEXT} characters.")
         if not isinstance(urgent, bool):
             raise BridgeError("urgent must be a boolean.")
-        payload = {"text": text, "source_id": source_id, "target_id": peer["sessionID"]}
+        payload = {"text": text, "source_id": source_id, "target_id": peer.session,
+                   "source_address": book.address(source), "target_address": book.address(peer)}
         kind = "message"
         if filename is not None:
             name = safe_name(filename)
@@ -101,7 +107,7 @@ class Mailbox:
             if count >= 30:
                 raise BridgeError("This machine has reached the limit of 30 sends per hour.")
             self.db.execute("INSERT INTO messages VALUES (?,?,?,?,?,?,?,?,NULL)",
-                            (message_id, time.time(), sources[0], target,
+                            (message_id, time.time(), sources[0] if sources else book.address(source), target,
                              "steer" if urgent else "queue", kind,
                              json.dumps(payload, ensure_ascii=False), "pending"))
         return {"id": message_id, "state": "pending", "delivery": "steer" if urgent else "queue"}
@@ -199,9 +205,8 @@ def remote_rpc(cfg, request):
         data=json.dumps(request, ensure_ascii=False), timeout=40)
 
 
-def deliver(cfg, job, root=ROOT):
-    peers = {alias: Peer(peer["side"], peer["sessionID"])
-             for alias, peer in cfg["peers"].items()}
+def deliver(cfg, job, root=ROOT, origin_side=None):
+    book = address_book(cfg)
 
     def adapters_for(side):
         def receive(message_id, payload):
@@ -209,7 +214,8 @@ def deliver(cfg, job, root=ROOT):
             return remote_rpc(cfg, req) if side == "wsl" else rpc(req, root)
         return DeliveryAdapters(OpenCodeAdapter(endpoint(cfg, side)), receive)
 
-    return deliver_message(job, peers, adapters_for, label="OpenCode bridge")
+    return deliver_message(job, book.peers, adapters_for, label="OpenCode bridge",
+                           addresses=book, origin_node=origin_side)
 
 
 class RpcMailbox:
@@ -228,7 +234,7 @@ class RpcMailbox:
 def relay_cycle(cfg, root=ROOT):
     for side in ("linux", "wsl"):
         call = (lambda req: rpc(req, root)) if side == "linux" else (lambda req: remote_rpc(cfg, req))
-        outcome = relay_once(RpcMailbox(call), lambda job: deliver(cfg, job, root))
+        outcome = relay_once(RpcMailbox(call), lambda job: deliver(cfg, job, root, origin_side=side))
         if outcome is None:
             continue
         if outcome["state"] == "uncertain":
@@ -287,8 +293,8 @@ def main():
     sub.add_parser("peers")
     sub.add_parser("status")
     send = sub.add_parser("send")
-    send.add_argument("--source", required=True, help="Alias of the registered source session.")
-    send.add_argument("--to", required=True)
+    send.add_argument("--source", required=True, help="Local session alias or node:ses_ID; MCP uses session metadata instead.")
+    send.add_argument("--to", required=True, help="Alias or linux:ses_ID / wsl:ses_ID on paired nodes.")
     send.add_argument("--text", required=True)
     send.add_argument("--urgent", action="store_true")
     send.add_argument("--file", help="Name of a file explicitly staged in outgoing/.")
@@ -322,10 +328,10 @@ def main():
                     result = box.cancel_pending(args.id)
                 else:
                     cfg = settings()
-                    source = cfg["peers"].get(args.source)
-                    if not source or source["side"] != cfg["side"]:
+                    source = address_book(cfg).resolve(args.source)
+                    if source.node != cfg["side"]:
                         raise BridgeError("The source alias is not local.")
-                    result = box.enqueue(source["sessionID"], args.to, args.text, args.urgent, args.file)
+                    result = box.enqueue(source.session, args.to, args.text, args.urgent, args.file)
             finally:
                 box.db.close()
         print(json.dumps(result, ensure_ascii=False))

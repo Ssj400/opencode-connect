@@ -7,7 +7,8 @@
    Python 3.10+ and the standard library. Do not claim universal support, native
    Windows, macOS, direct Linux SSH, multiple transports, or arbitrary topologies.
 3. **No implicit changes.** Require adjacent configuration with absolute installation
-   paths and no personal defaults. Reject session placeholders before using transport.
+   paths and no personal defaults. Shortcuts are optional for chat; reject unresolved
+   placeholders when shortcuts are configured.
 4. **MCP compatibility.** Retain the recommended `laptop_bridge` alias and classic
    `legacy` protocol. Do not install or change OpenCode configuration automatically.
 5. **Directed messaging.** No automatic conversation command or agent cancellation
@@ -120,3 +121,22 @@ Tests cover the pure core with fictitious nodes/harnesses, OpenCode API mappings
 command transport shapes, and the existing application behavior. The public edition
 still needs explicitly authorized live integration; interface extraction alone does
 not verify a new platform or harness. See [architecture](architecture.md).
+
+## Any-session chat on paired nodes
+
+Text chat no longer requires session registration. The source remains tied to
+mandatory MCP metadata. A destination may be a configured shortcut or an explicit
+`linux:ses_ID` / `wsl:ses_ID` address, including another session on the same node.
+`whoami` returns the caller's reply address; received messages include that address.
+This does not discover arbitrary hosts or expose conversation histories.
+
+Canonical addresses are pinned in queued payloads and revalidated against current
+routes and mailbox origin at delivery. Older SQLite records keep their original
+cross-node route checks; no schema migration or automatic retry is introduced.
+Both endpoints must still be explicitly registered for files, checked at enqueue
+and delivery. Chat payloads cannot include hidden file operations.
+
+The trust boundary remains the owner's paired accounts and existing harness
+permissions. Chat permission does not authorize executing received instructions,
+controlling environments, or sharing files. It does not create a harness-enforced
+text-only sandbox or implement cross-person consent agreements.

@@ -55,10 +55,9 @@ def validate_config(cfg):
     if cfg["side"] not in ("linux", "wsl"):
         raise BridgeError("side must be linux or wsl.")
     peers = cfg["peers"]
-    if not isinstance(peers, dict) or not peers:
-        raise BridgeError("peers must contain explicitly registered sessions.")
+    if not isinstance(peers, dict):
+        raise BridgeError("peers must be a mapping of optional session shortcuts.")
     seen = set()
-    sides = set()
     for alias, peer in peers.items():
         if not isinstance(alias, str) or not re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]{0,63}", alias):
             raise BridgeError("Invalid alias.")
@@ -75,9 +74,6 @@ def validate_config(cfg):
         if identity in seen:
             raise BridgeError("A session cannot have duplicate aliases on the same side.")
         seen.add(identity)
-        sides.add(peer["side"])
-    if sides != {"linux", "wsl"}:
-        raise BridgeError("Register at least one session on each side.")
     validate_ssh(cfg["ssh"])
     return cfg
 
