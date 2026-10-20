@@ -6,11 +6,9 @@ from pathlib import Path, PurePosixPath
 import re
 import stat
 
+from core import BridgeError
+
 ROOT = Path(__file__).resolve().parent
-
-
-class BridgeError(Exception):
-    pass
 
 
 def clean_text(value, field, maximum=4096):

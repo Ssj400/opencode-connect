@@ -102,3 +102,21 @@ Future implementations must check authorization both at enqueue and execution ti
 rejecting expired or revoked tasks. Revocation blocks new actions when received;
 it does not undo completed effects or cancel running work without specific
 authorization. This prototype does NOT implement these agreements yet.
+
+## Implemented core/adapter separation
+
+The first abstraction step extracts a pure delivery core (`core.py`), an OpenCode
+CLI/session adapter (`opencode_adapter.py`), and command transports (`transports.py`).
+Application wiring remains in `collab.py`; `bridge.Endpoint` preserves its facade
+for CLI and deployment callers. Existing routes, tools, and SQLite schema remain
+unchanged. No operational personal state is migrated by this change.
+
+The core accepts opaque peer/session identifiers through injected contracts and
+never reads configuration, runs commands, or calls a harness API. Adapters declare
+delivery capabilities; unsupported modes fail rather than silently becoming queue.
+Receipt persistence failure propagates without a resend, preserving manual recovery.
+
+Tests cover the pure core with fictitious nodes/harnesses, OpenCode API mappings,
+command transport shapes, and the existing application behavior. The public edition
+still needs explicitly authorized live integration; interface extraction alone does
+not verify a new platform or harness. See [architecture](architecture.md).

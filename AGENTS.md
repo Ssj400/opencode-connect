@@ -31,4 +31,17 @@ any language; this policy does not restrict messages exchanged through the bridg
 - Before integrating API changes, consult the V2 documentation if network access is allowed.
   Unit tests for this edition require no network access.
 
-See the [README](README.md), [security policy](SECURITY.md), and [decisions](docs/decisions.md).
+## Architecture boundaries
+
+- Keep `core.py` independent of harnesses, operating systems, configuration,
+  filesystems, subprocesses, and network clients. Use opaque node/session identifiers.
+- Put OpenCode CLI/API schemas in `opencode_adapter.py`, and command execution or
+  Windows/WSL SSH details in `transports.py`.
+- Keep configuration, storage, and process lifecycle wiring in the application layer.
+- Preserve existing CLI/MCP behavior and stored message formats during refactors.
+- Reject unsupported adapter capabilities explicitly; never silently downgrade `steer`.
+- New adapters require their own tests; extracting interfaces does not establish
+  support for another operating system or harness.
+
+See the [README](README.md), [security policy](SECURITY.md), [architecture](docs/architecture.md),
+and [decisions](docs/decisions.md).

@@ -61,7 +61,8 @@ class PublicTests(unittest.TestCase):
         self.assertEqual(audit_public.findings("192.0.2.10 ses_REPLACE_LINUX /home/example/project"), [])
 
     def test_no_agent_cancellation_or_auto_chat(self):
-        for name in ("bridge.py", "collab.py", "mcp_server.py"):
+        for name in ("bridge.py", "collab.py", "mcp_server.py", "core.py",
+                     "opencode_adapter.py", "transports.py"):
             tree = ast.parse((ROOT / name).read_text())
             strings = [n.value for n in ast.walk(tree) if isinstance(n, ast.Constant) and isinstance(n.value, str)]
             self.assertFalse(any("/interrupt" in value for value in strings))
@@ -122,15 +123,15 @@ class PublicTests(unittest.TestCase):
                 shutil.copyfile(ROOT / name, target)
             code = '''import sys,pathlib,unittest
 root=pathlib.Path(sys.argv[1]);sys.path.insert(0,str(root))
-import config,bridge,collab,mcp_server,deploy,audit_public
-for module in (config,bridge,collab,mcp_server,deploy,audit_public):
+import config,bridge,collab,mcp_server,deploy,audit_public,core,opencode_adapter,transports
+for module in (config,bridge,collab,mcp_server,deploy,audit_public,core,opencode_adapter,transports):
     assert pathlib.Path(module.__file__).parent == root
 assert audit_public.audit(root) == []
 try: config.load_config(root)
 except config.BridgeError: pass
 else: raise AssertionError("unexpected configuration")
 assert mcp_server.handle({"id":1,"method":"initialize"})["result"]["serverInfo"]["name"] == "opencode-connect"
-suite=unittest.defaultTestLoader.loadTestsFromNames(["test_bridge", "test_collab"])
+suite=unittest.defaultTestLoader.loadTestsFromNames(["test_bridge", "test_collab", "test_core", "test_adapters"])
 result=unittest.TextTestRunner(verbosity=0).run(suite)
 sys.exit(0 if result.wasSuccessful() else 1)
 '''

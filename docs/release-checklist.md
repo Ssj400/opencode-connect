@@ -18,6 +18,7 @@
 - [x] Check relative skill links and use the created repository's actual URL.
 - [x] Verify that the export does not contain an operational `routes.json`.
 - [x] Use English throughout documentation, instructions, comments, and runtime messages.
+- [x] Separate the delivery core, OpenCode adapter, and command transports with isolated tests.
 
 ## Future integration — NOT verified in this edition
 

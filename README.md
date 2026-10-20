@@ -218,6 +218,16 @@ The next platform priorities are **Linux ↔ Linux** and **Windows ↔ Windows**
 followed by macOS. Native Windows and WSL are distinct targets. These adapters
 are not implemented yet; the current transport remains Linux → Windows SSH → WSL.
 
+## Architecture
+
+The delivery core is independent of harness APIs and operating systems. An agent
+adapter translates messages to OpenCode, while a command transport handles local
+execution or SSH into WSL. Existing CLI commands, configuration, mailboxes, and MCP
+tools are preserved. See [core and adapter boundaries](docs/architecture.md).
+
+This separation prepares future platform and harness adapters; it does not yet
+add Linux-to-Linux, native Windows, macOS, or Claude Code support.
+
 ## License
 
 [MIT](LICENSE) — Copyright (c) 2026 Ssj400.

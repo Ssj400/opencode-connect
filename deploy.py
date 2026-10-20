@@ -14,9 +14,10 @@ from collab import ROOT, endpoint, settings
 # This is also the complete export allowlist. No recursive copying.
 FILES = (
     "AGENTS.md", "README.md", "LICENSE", "SECURITY.md", ".gitignore", "routes.example.json",
-    "config.py", "bridge.py", "collab.py", "mcp_server.py", "deploy.py", "audit_public.py",
-    "test_bridge.py", "test_collab.py", "test_public.py",
-    "docs/decisions.md", "docs/release-checklist.md",
+    "config.py", "core.py", "transports.py", "opencode_adapter.py",
+    "bridge.py", "collab.py", "mcp_server.py", "deploy.py", "audit_public.py",
+    "test_bridge.py", "test_collab.py", "test_core.py", "test_adapters.py", "test_public.py",
+    "docs/decisions.md", "docs/release-checklist.md", "docs/architecture.md",
     "examples/opencode.jsonc.example", "skills/opencode-connect/SKILL.md",
 )
 

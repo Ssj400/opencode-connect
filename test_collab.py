@@ -179,7 +179,7 @@ class CollabTests(unittest.TestCase):
         self.send(filename="test.txt")
         with self.assertRaises(BridgeError):
             collab.deliver(self.cfg, self.box.claim(), self.root)
-        make.assert_not_called()
+        make.return_value.call.assert_not_called()
 
     @patch("collab.remote_rpc", return_value=None)
     @patch("collab.deliver", side_effect=BridgeError("ambiguous POST"))
