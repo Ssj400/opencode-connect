@@ -203,6 +203,74 @@ class LocalIdentityQueueTests(unittest.TestCase):
         self.insert_pending(box, "linAx:ses_ALPHA", "linAx:ses_FOREIGN", 1.0)
         self.assertIsNone(box.claim())
 
+    def set_stored_contract(self, version, node="linux"):
+        with self.box.db:
+            self.box.db.execute("UPDATE local_contract SET schema_version=?, canonical_node=? WHERE singleton=1",
+                                (version, node))
+
+    def test_version_1_queue_fails_closed_until_migrated_with_rows_untouched(self):
+        self.seed_states()
+        self.set_stored_contract(1)
+        before = self.records()
+        self.assert_blocked_unchanged(self.box)
+        self.assertTrue(self.box.diagnostics()["migration_needed"])
+        self.assertEqual(self.box.migrate(), {"migrated": True, "contract": self.box.contract})
+        self.assertEqual(self.records(), before)
+        self.assertEqual(self.contract()["schema_version"], 2)
+        self.assertEqual(self.box.migrate(), {"migrated": False, "contract": self.box.contract})
+        self.assertEqual(self.box.claim()["payload"]["text"], "Synthetic pending")
+
+    def test_migration_refuses_other_nodes_and_unknown_versions(self):
+        self.seed_states()
+        for version, node in ((1, "wsl"), (3, "linux")):
+            with self.subTest(version=version, node=node):
+                self.set_stored_contract(version, node)
+                before = self.records()
+                with self.assertRaisesRegex(BridgeError, "Only a version 1 queue"):
+                    self.box.migrate()
+                self.assertEqual((self.contract()["schema_version"], self.contract()["canonical_node"]),
+                                 (version, node))
+                self.assertEqual(self.records(), before)
+
+    def test_unbound_queue_needs_no_migration(self):
+        self.assertEqual(self.box.migrate(), {"migrated": False, "contract": None})
+        self.assertIsNone(self.contract())
+
+    def test_version_1_code_fails_closed_on_a_version_2_queue(self):
+        self.seed_states()
+        old = self.open_box("linux")
+        old.contract = {**old.contract, "schema_version": 1}
+        self.assert_blocked_unchanged(old)
+
+    def test_concurrent_migrations_upgrade_exactly_once(self):
+        self.seed_states()
+        self.set_stored_contract(1)
+
+        def migrate(_):
+            box = LocalMailbox(self.root, node="linux")
+            try:
+                return box.migrate()["migrated"]
+            finally:
+                box.db.close()
+
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            results = list(pool.map(migrate, range(4)))
+        self.assertEqual(results.count(True), 1)
+        self.assertEqual(self.contract()["schema_version"], 2)
+
+    def test_resolve_records_a_human_outcome_only_for_stale_states(self):
+        self.seed_states()
+        rows = {row["state"]: row["id"] for row in self.box.db.execute("SELECT id, state FROM messages")}
+        self.assertEqual(self.box.resolve(rows["sending"], "delivered"), {"id": rows["sending"], "state": "delivered"})
+        self.assertEqual(self.box.resolve(rows["uncertain"], "failed")["state"], "failed")
+        result = json.loads(self.box.db.execute("SELECT result FROM messages WHERE id=?",
+                                                (rows["sending"],)).fetchone()[0])
+        self.assertEqual(result, {"resolved_from": "sending", "by": "operator"})
+        for message_id, state in ((rows["pending"], "failed"), (rows["sending"], "failed"),
+                                  ("msg_" + "0" * 32, "failed"), (rows["pending"], "pending")):
+            with self.subTest(message_id=message_id, state=state), self.assertRaises(BridgeError):
+                self.box.resolve(message_id, state)
+
     def test_claim_requires_a_namespace(self):
         for match in ("", "linux", "person", b"linux:", 7):
             with self.subTest(match=match), self.assertRaises(BridgeError):
@@ -410,8 +478,10 @@ class LocalIdentityQueueTests(unittest.TestCase):
         for box, compatible in ((self.box, True), (self.open_box("wsl"), False)):
             with self.subTest(node=box.node):
                 result = box.diagnostics()
-                self.assertEqual(set(result), {"configured", "stored", "queue_path", "compatible"})
+                self.assertEqual(set(result), {"configured", "stored", "queue_path", "compatible",
+                                               "migration_needed"})
                 self.assertEqual(result["compatible"], compatible)
+                self.assertFalse(result["migration_needed"])
                 self.assertEqual(result["configured"]["canonical_node"], box.node)
                 self.assertEqual(result["stored"]["canonical_node"], "linux")
                 self.assertIsInstance(result["queue_path"], str)

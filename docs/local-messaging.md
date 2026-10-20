@@ -134,6 +134,25 @@ or changing configuration. Versions predating contract checks cannot enforce the
 new metadata; a new schema cannot retroactively make an old binary reject it.
 Do not stop agents, delete state, or reset ambiguous messages to force an upgrade.
 
+### Contract versions and upgrades
+
+Version 2 of the contract adds two address namespaces next to this node's OpenCode
+sessions: `claude:<uuid>` for Claude Code sessions and `person:<name>` for remote
+people. Rows keep the same schema. Each consumer claims only targets in its own
+namespace, so the OpenCode worker never claims `claude:` or `person:` rows.
+Remote people can only enter the queue through the courier, never as a source
+passed to `send`.
+
+A version 1 queue is refused until `python3 local_bridge.py migrate` upgrades it.
+Migration rewrites only the contract version: every row stays untouched, stale
+`sending` rows included, and a queue bound to another node or to an unknown
+version is refused. Version 1 code then refuses the upgraded queue, so upgrade
+every local worker and MCP process together. `diagnose` reports
+`migration_needed`.
+
+`python3 local_bridge.py resolve ID --state delivered|failed|cancelled` records a
+human-reviewed outcome for a stale `sending` or `uncertain` message. It never resends.
+
 ### Service selection limitation
 
 The contract compares configuration, **not service identity or authentication**.

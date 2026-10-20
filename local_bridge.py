@@ -82,13 +82,51 @@ def canonical(value, node=None):
     return f"{prefix}:{validate(identifier)}"
 
 
+# Version 2 adds the claude: and person: namespaces. Rows keep the same schema.
+SCHEMA_VERSION = 2
+
+
 class LocalMailbox(Mailbox):
     """Separate database using the existing claim/receipt schema and crash behavior."""
 
     def __init__(self, root, node=None):
         self.node = local_node(node)
-        self.contract = {"schema_version": 1, "mode": "local", "canonical_node": self.node}
+        self.contract = {"schema_version": SCHEMA_VERSION, "mode": "local", "canonical_node": self.node}
         super().__init__(root)
+
+    def _migratable(self, stored):
+        return (stored is not None and stored.get("schema_version") == 1
+                and stored.get("mode") == "local" and stored.get("canonical_node") == self.node)
+
+    def migrate(self):
+        """Upgrade a version 1 contract bound to this node, leaving every row untouched.
+
+        Version 1 rows are OpenCode-only and stay valid, stale sending rows included,
+        so they never block the upgrade. Version 1 code then refuses the queue.
+        """
+        with self.db:
+            self.db.execute("BEGIN IMMEDIATE")
+            stored = self._stored_contract()
+            if stored is None or stored == self.contract:
+                return {"migrated": False, "contract": stored}
+            if not self._migratable(stored):
+                raise BridgeError("Only a version 1 queue bound to this node can be migrated.")
+            self.db.execute("UPDATE local_contract SET schema_version=? WHERE singleton=1", (SCHEMA_VERSION,))
+        return {"migrated": True, "contract": dict(self.contract)}
+
+    def resolve(self, message_id, state):
+        """Record a human decision about a stale sending or uncertain message; never resends."""
+        if state not in ("delivered", "failed", "cancelled"):
+            raise BridgeError("A resolved message must become delivered, failed, or cancelled.")
+        with self.db:
+            self.db.execute("BEGIN IMMEDIATE")
+            self._check_contract()
+            row = self.db.execute("SELECT state FROM messages WHERE id=?", (message_id,)).fetchone()
+            if row is None or row["state"] not in ("sending", "uncertain"):
+                raise BridgeError("Only sending or uncertain messages can be resolved.")
+            self.db.execute("UPDATE messages SET state=?, result=? WHERE id=?",
+                            (state, json.dumps({"resolved_from": row["state"], "by": "operator"}), message_id))
+        return {"id": message_id, "state": state}
 
     def _stored_contract(self):
         try:
@@ -125,7 +163,8 @@ class LocalMailbox(Mailbox):
             populated = self.db.execute("SELECT 1 FROM messages LIMIT 1").fetchone() is not None
             return {"configured": dict(self.contract), "stored": stored,
                     "queue_path": str((self.state / "mail.sqlite3").resolve()),
-                    "compatible": stored == self.contract if stored is not None else not populated}
+                    "compatible": stored == self.contract if stored is not None else not populated,
+                    "migration_needed": self._migratable(stored)}
 
     def claim(self, match=None):
         """Claim the oldest pending message whose target starts with `match`.
@@ -251,6 +290,10 @@ def main():
     send.add_argument("--text", required=True)
     commands.add_parser("status", help="Inspect local queue receipts, not message contents.")
     commands.add_parser("diagnose", help="Compare local node and queue contracts; does not verify service identity.")
+    commands.add_parser("migrate", help="Upgrade a version 1 queue bound to this node; rows stay untouched.")
+    resolve = commands.add_parser("resolve", help="Record a reviewed outcome for a stale sending or uncertain message.")
+    resolve.add_argument("id")
+    resolve.add_argument("--state", required=True, choices=("delivered", "failed", "cancelled"))
     worker = commands.add_parser("relay", help="Deliver queued messages; may consume model quota.")
     worker.add_argument("--once", action="store_true")
     args = parser.parse_args()
@@ -268,6 +311,10 @@ def main():
                 result = box.status()
             elif args.command == "diagnose":
                 result = box.diagnostics()
+            elif args.command == "migrate":
+                result = box.migrate()
+            elif args.command == "resolve":
+                result = box.resolve(args.id, args.state)
             else:
                 relay(box, adapter, once=args.once)
                 return 0
