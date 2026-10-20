@@ -17,7 +17,7 @@ def fixture():
     return {"side": "linux", "peers": {
         "linux": {"side": "linux", "sessionID": "ses_local"},
         "wsl": {"side": "wsl", "sessionID": "ses_remote"}},
-        "ssh": {"host": "192.0.2.10", "ssh_user": "Usuario Ejémplo", "wsl_user": "example",
+        "ssh": {"host": "192.0.2.10", "ssh_user": "Example Usér", "wsl_user": "example",
                 "remote_opencode": "/opt/Example App/opencode", "remote_directory": "/srv/Example Project"}}
 
 
@@ -61,7 +61,7 @@ class ConfigTests(unittest.TestCase):
 
     def test_missing_config_is_not_inherited(self):
         with TemporaryDirectory() as folder:
-            with self.assertRaisesRegex(config.BridgeError, "Falta routes.json"):
+            with self.assertRaisesRegex(config.BridgeError, "Missing routes.json"):
                 config.load_config(Path(folder))
             (Path(folder) / "routes.json").write_text("invalid")
             with self.assertRaises(config.BridgeError):
@@ -79,7 +79,7 @@ class BridgeTests(unittest.TestCase):
             unittest.mock.call("get", "/api/session?limit=1")])
 
     def test_check_identifies_endpoint(self):
-        endpoint = Mock(); endpoint.call.side_effect = config.BridgeError("JSON inválido")
+        endpoint = Mock(); endpoint.call.side_effect = config.BridgeError("Invalid JSON")
         with self.assertRaisesRegex(config.BridgeError, "WSL, GET /api/info"):
             bridge.check([("WSL", endpoint)])
 
@@ -102,7 +102,7 @@ class BridgeTests(unittest.TestCase):
     def test_remote_payload_stays_out_of_shell(self, run, socket):
         args = SimpleNamespace(**fixture()["ssh"], local_opencode="opencode")
         run.return_value = subprocess.CompletedProcess([], 0, b'{"data":{}}', b"")
-        text = '¡Hola! " & example.exe | %PATH%\n' * 1000
+        text = 'Hello, Unicode: ñ 🚀 " & example.exe | %PATH%\n' * 1000
         bridge.Endpoint(args, remote=True).call("post", "/api/session/ses_remote/prompt", {"text": text})
         command = run.call_args.args[0]
         payload = json.loads(run.call_args.kwargs["input"])["argv"]
@@ -130,7 +130,7 @@ class BridgeTests(unittest.TestCase):
             self.assertEqual(first, bridge.socket_path("example", "192.0.2.10"))
             self.assertNotEqual(first, bridge.socket_path("other", "192.0.2.10"))
         with patch("bridge.socket_directory", return_value=Path("/" + "x" * 101)):
-            with self.assertRaisesRegex(config.BridgeError, "demasiado larga"):
+            with self.assertRaisesRegex(config.BridgeError, "too long"):
                 bridge.socket_path("example", "192.0.2.10")
 
     def test_socket_rejects_insecure_and_symlink(self):

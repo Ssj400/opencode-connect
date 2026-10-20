@@ -26,7 +26,7 @@ class CollabTests(unittest.TestCase):
         self.box = collab.Mailbox(self.root)
         self.addCleanup(self.box.db.close)
 
-    def send(self, text="hola", **kwargs):
+    def send(self, text="hello", **kwargs):
         return self.box.enqueue("ses_local", "wsl", text, **kwargs)
 
     def test_queue_and_steer_priority(self):
@@ -51,7 +51,7 @@ class CollabTests(unittest.TestCase):
         reopened = collab.Mailbox(self.root)
         try:
             self.assertEqual(reopened.claim()["id"], msg["id"])
-            # El cambio de estado es persistente y visible a otro cliente.
+            # State changes persist and are visible to another client.
             self.assertIsNone(self.box.claim())
         finally:
             reopened.db.close()
@@ -63,7 +63,7 @@ class CollabTests(unittest.TestCase):
         try:
             self.assertIsNone(reopened.claim())
             self.assertEqual(reopened.status()[0]["state"], "sending")
-            reopened.mark(msg["id"], "uncertain", "Revisión manual tras caída")
+            reopened.mark(msg["id"], "uncertain", "Manual review after a crash")
             self.assertIsNone(self.box.claim())
         finally:
             reopened.db.close()
@@ -91,7 +91,7 @@ class CollabTests(unittest.TestCase):
             self.box.cancel_pending(msg["id"])
 
     def test_file_integrity_no_overwrite_or_traversal(self):
-        data = b"hola\x00\xff"
+        data = b"hello\x00\xff"
         payload = {"name": "example.bin", "data": base64.b64encode(data).decode(),
                    "sha256": hashlib.sha256(data).hexdigest()}
         mid = "msg_" + "a" * 32
@@ -172,7 +172,7 @@ class CollabTests(unittest.TestCase):
         self.assertIn("/remote/inbox/test.txt", make.return_value.call.call_args.args[2]["text"])
 
     @patch("collab.endpoint")
-    @patch("collab.remote_rpc", side_effect=BridgeError("SSH desconectado"))
+    @patch("collab.remote_rpc", side_effect=BridgeError("SSH disconnected"))
     def test_failed_transfer_does_not_notify_or_interrupt(self, remote, make):
         (self.root / "outgoing").mkdir()
         (self.root / "outgoing" / "test.txt").write_text("shared")
@@ -192,7 +192,7 @@ class CollabTests(unittest.TestCase):
 
     def test_mcp_metadata_required_and_no_reply_loop(self):
         request = {"jsonrpc": "2.0", "id": 1, "method": "tools/call",
-                   "params": {"name": "send", "arguments": {"to": "wsl", "text": "hola"}}}
+                   "params": {"name": "send", "arguments": {"to": "wsl", "text": "hello"}}}
         self.assertTrue(mcp_server.handle(request, self.root)["result"]["isError"])
         request["params"]["_meta"] = {"ai.opencode/sessionID": "ses_local"}
         result = mcp_server.handle(request, self.root)

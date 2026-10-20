@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""MCP stdio clásico: herramientas locales sin abrir un puerto de red."""
+"""Classic MCP over stdio: local tools without an additional network port."""
 
 import json
 import os
@@ -9,16 +9,16 @@ from bridge import BridgeError
 from collab import Mailbox, ROOT, settings
 
 
-INSTRUCTIONS = """Comunicación dirigida entre sesiones OpenCode autorizadas por el usuario.
-Usa send solo para un encargo o aviso necesario dentro del trabajo autorizado.
-Normal: queue; urgent=true: steer, solo para un bloqueo o cambio urgente real.
-No cancelar agentes, ampliar tareas ni cambiar el modo Plan por este canal.
-No reenviar tus respuestas ni contestar acuses automáticamente: evita ping-pong.
-No te quedes esperando una respuesta en un bucle: puedes seguir tu tarea.
-send_file solo lee archivos preparados explícitamente en outgoing/ del puente.
-La entrega requiere el relay Linux y SSH vivos; pending NO significa entregado.
-Consulta status; sending antiguo o uncertain requiere revisión, nunca reenvío ciego.
-Lee AGENTS.md en la carpeta de este servidor para contexto y límites.
+INSTRUCTIONS = """Directed communication between user-authorized OpenCode sessions.
+Use send only for a necessary task or notice within the authorized scope.
+Normal: queue; urgent=true: steer, only for a real urgent blocker or change.
+Do not cancel agents, expand tasks, or change Plan mode through this channel.
+Do not forward responses or reply to acknowledgments automatically: avoid loops.
+Do not wait for replies in a polling loop; continue your independent task.
+send_file only reads files explicitly staged in the bridge's outgoing/ directory.
+Delivery requires the Linux relay and SSH to be running; pending is NOT delivered.
+Check status; stale sending or uncertain requires review, never blind retries.
+Read AGENTS.md in this server's directory for context and boundaries.
 """
 
 
@@ -30,16 +30,16 @@ def tool_schema(name, description, properties, required=()):
 
 
 SEND_PROPERTIES = {
-    "to": {"type": "string", "description": "Alias registrado del otro equipo; consulta peers."},
+    "to": {"type": "string", "description": "Registered alias on the other machine; check peers."},
     "text": {"type": "string", "minLength": 1, "maxLength": 12000},
-    "urgent": {"type": "boolean", "default": False, "description": "Solo urgencias explícitas: steer en lugar de queue."},
+    "urgent": {"type": "boolean", "default": False, "description": "Explicit urgent notices only: steer instead of queue."},
 }
 TOOLS = [
-    tool_schema("peers", "Ver las sesiones registradas, sin leer sus conversaciones.", {}),
-    tool_schema("status", "Estado de los últimos 30 envíos de este equipo; no reintentar uncertain.", {}),
-    tool_schema("send", "Enviar un mensaje explícito al otro OpenCode; no espera respuesta.", SEND_PROPERTIES, ("to", "text")),
-    tool_schema("send_file", "Transferir archivo de outgoing/ (máximo 1 MiB), sin sobrescribir ni ejecutar.",
-                {**SEND_PROPERTIES, "filename": {"type": "string", "description": "Nombre simple, sin rutas."}},
+    tool_schema("peers", "List registered sessions without reading their conversations.", {}),
+    tool_schema("status", "Status of this machine's last 30 sends; do not retry uncertain messages.", {}),
+    tool_schema("send", "Send an explicit message to the other OpenCode; does not wait for a reply.", SEND_PROPERTIES, ("to", "text")),
+    tool_schema("send_file", "Transfer a staged outgoing/ file (maximum 1 MiB), without overwriting or executing it.",
+                {**SEND_PROPERTIES, "filename": {"type": "string", "description": "Simple filename without a path."}},
                 ("to", "text", "filename")),
 ]
 
@@ -54,13 +54,13 @@ def call_tool(params, root=ROOT):
         if name == "status":
             return box.status()
         if name not in ("send", "send_file"):
-            raise BridgeError("Herramienta desconocida.")
+            raise BridgeError("Unknown tool.")
         allowed = {"to", "text", "urgent"} | ({"filename"} if name == "send_file" else set())
         if set(args) - allowed:
-            raise BridgeError("Argumentos desconocidos.")
+            raise BridgeError("Unknown arguments.")
         session_id = params.get("_meta", {}).get("ai.opencode/sessionID")
         if not session_id:
-            raise BridgeError("Falta metadata ai.opencode/sessionID; no se adivina la sesión origen.")
+            raise BridgeError("Missing ai.opencode/sessionID metadata; the source session will not be guessed.")
         return box.enqueue(session_id, args["to"], args["text"], args.get("urgent", False),
                            args["filename"] if name == "send_file" else None)
     finally:

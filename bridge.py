@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Transporte Linux -> SSH Windows -> WSL. Solo connect y check; no debate automático."""
+"""Linux -> Windows SSH -> WSL transport. Only connect/check; no automatic conversations."""
 import argparse
 import base64
 import hashlib
@@ -20,9 +20,9 @@ def decode_response(output):
     try:
         result = json.loads(output)
     except (ValueError, UnicodeError) as exc:
-        raise BridgeError("La API no devolvió JSON válido.") from exc
+        raise BridgeError("The API did not return valid JSON.") from exc
     if isinstance(result, dict) and "_tag" in result:
-        raise BridgeError(f"Error de API: {result.get('message', result['_tag'])}")
+        raise BridgeError(f"API error: {result.get('message', result['_tag'])}")
     return result
 
 
@@ -30,12 +30,12 @@ def run_json(command, payload=None, timeout=30):
     try:
         result = subprocess.run(command, input=payload, capture_output=True, timeout=timeout)
     except subprocess.TimeoutExpired as exc:
-        raise BridgeError("Tiempo agotado; no se reintentará el mensaje.") from exc
+        raise BridgeError("Request timed out; the message will not be retried.") from exc
     except OSError as exc:
         raise BridgeError(str(exc)) from exc
     if result.returncode:
         raise BridgeError(result.stderr.decode("utf-8", errors="replace").strip()
-                          or f"El comando terminó con código {result.returncode}.")
+                          or f"Command exited with status {result.returncode}.")
     return decode_response(result.stdout)
 
 
@@ -46,7 +46,7 @@ def socket_directory():
     else:
         base = Path(os.environ.get("XDG_CACHE_HOME", str(Path.home() / ".cache")))
         if not base.is_absolute():
-            raise BridgeError("XDG_CACHE_HOME debe ser absoluto.")
+            raise BridgeError("XDG_CACHE_HOME must be an absolute path.")
     return private_directory(base / "opencode-connect")
 
 
@@ -55,9 +55,9 @@ def socket_path(ssh_user, host):
     digest = hashlib.sha256(f"{ssh_user}@{host}".encode()).hexdigest()[:16]
     path = folder / (digest + ".sock")
     if len(os.fsencode(path)) > 100:
-        raise BridgeError("Ruta del socket demasiado larga; configura un XDG_RUNTIME_DIR privado más corto.")
+        raise BridgeError("Socket path is too long; configure a shorter private XDG_RUNTIME_DIR.")
     if path.is_symlink():
-        raise BridgeError("El socket SSH no puede ser un enlace.")
+        raise BridgeError("The SSH socket must not be a symlink.")
     return str(path)
 
 
@@ -82,7 +82,7 @@ class Endpoint:
         command = self.ssh(batch=False)
         command[1:1] = ["-M", "-N", "-f", "-o", "ControlPersist=600"]
         if subprocess.run(command).returncode:
-            raise BridgeError("No se pudo abrir la conexión SSH reutilizable.")
+            raise BridgeError("Could not open a reusable SSH connection.")
 
     def call(self, method, path, body=None, timeout=30):
         argv = [self.args.remote_opencode if self.remote else self.args.local_opencode,
@@ -119,13 +119,13 @@ def check(endpoints):
                 raise BridgeError(f"{label}, GET {path}: {exc}") from exc
             if path == "/api/info":
                 if not isinstance(response, dict) or not isinstance(response.get("version"), str):
-                    raise BridgeError(f"{label}: respuesta de /api/info inesperada.")
+                    raise BridgeError(f"{label}: unexpected /api/info response.")
                 info = response
                 if not info["version"].startswith("2."):
-                    raise BridgeError(f"{label}: se requiere OpenCode V2.")
+                    raise BridgeError(f"{label}: OpenCode V2 is required.")
             elif not isinstance(response, dict) or not isinstance(response.get("data"), list):
-                raise BridgeError(f"{label}: respuesta de sesiones inesperada.")
-        print(f"{label}: OpenCode {info['version']}, API accesible.", flush=True)
+                raise BridgeError(f"{label}: unexpected session list response.")
+        print(f"{label}: OpenCode {info['version']}, API accessible.", flush=True)
 
 
 def main():
@@ -135,19 +135,19 @@ def main():
     try:
         cfg = load_config()
         if cfg["side"] != "linux":
-            raise BridgeError("connect/check se ejecutan desde el coordinador Linux.")
+            raise BridgeError("Run connect/check from the Linux coordinator.")
         options = SimpleNamespace(**cfg["ssh"], local_opencode=shutil.which("opencode") or "opencode")
         local, remote = Endpoint(options), Endpoint(options, remote=True)
         if args.command == "connect":
             remote.connect()
-            print("Conexión reutilizable abierta (expira tras 10 minutos sin uso).")
+            print("Reusable connection opened (expires after 10 idle minutes).")
         else:
             check([("Linux", local), ("Windows/WSL", remote)])
     except (BridgeError, OSError) as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
     except KeyboardInterrupt:
-        print("\nCliente detenido; no se cancelan agentes.", file=sys.stderr)
+        print("\nClient stopped; no agents were cancelled.", file=sys.stderr)
         return 130
     return 0
 

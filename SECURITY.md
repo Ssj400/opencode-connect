@@ -1,50 +1,50 @@
-# Seguridad y límites
+# Security and limitations
 
-## Modelo de confianza
+## Trust model
 
-Herramienta personal para dos equipos y cuentas de sistema confiables: coordinador
-Linux → SSH de Windows → WSL. MCP usa stdio; no abre un puerto adicional.
-La API de OpenCode permanece local y se accede mediante `opencode api`.
-La metadata `ai.opencode/sessionID` es correlación, no autenticación. La allowlist
-reduce errores de encaminamiento; no es aislamiento frente a un usuario local hostil.
-Quien puede editar scripts, configuración, estado o comandos SSH ya controla el puente.
-No ofrecer este RPC ni MCP como servicio público o multiusuario.
+A personal tool for two trusted machines and system accounts: Linux coordinator
+→ Windows SSH → WSL. MCP uses stdio and does not open an additional network port.
+The OpenCode API remains local and is accessed through `opencode api`.
+The `ai.opencode/sessionID` metadata provides correlation, not authentication.
+The allowlist reduces routing mistakes; it does not isolate hostile local users.
+Anyone who can edit scripts, configuration, runtime state, or SSH commands already
+controls the bridge. Do not expose this RPC or MCP server as a public or multi-user service.
 
-## Garantías implementadas y límites
+## Implemented protections and limitations
 
-- Solo aliases registrados; rutas y usuarios se validan antes del transporte.
-- JSON por stdin; mensajes y rutas no se interpolan en comandos del shell Windows.
-- Sin desactivar comprobación de host ni copiar credenciales internas de OpenCode.
-- Socket de control en directorio privado del usuario, no en un directorio temporal compartido.
-- SQLite y bandejas son datos privados. El entorno y rutas de instalación deben ser
-  propiedad del usuario; no permitir escrituras de terceros.
-- El archivo se limita a 1 MiB, se verifica por SHA256 y se crea sin sobrescribir.
-  El hash verifica integridad, no confianza ni autenticidad del contenido.
-- Las comprobaciones de symlinks no son una defensa completa frente a carreras
-  provocadas por procesos maliciosos de la misma cuenta. No compartir esta instalación.
-- La denegación de algunos nombres de credenciales es solo defensa adicional:
-  no detecta secretos dentro de un archivo con nombre inocuo. Revisar contenido manualmente.
-- Límite de 30 envíos/hora por equipo; no es una garantía de gasto máximo.
-- Un POST ambiguo no se reintenta. No se promete entrega exactamente una vez.
-  Puede quedar un archivo recibido sin su notificación si el POST posterior falla.
-- No hay reconciliación automática de `sending`/`uncertain` ni cancelación de agentes.
-- Los permisos de las sesiones registradas siguen vigentes. `create-session` pide
-  permisos `ask`, no habilita herramientas automáticamente ni inicia una generación.
-- Deployment comprueba cambios remotos mediante manifiesto y hashes; archivos se
-  escriben atómicamente por separado, no como transacción del árbol completo.
-  Un fallo parcial puede requerir revisión manual. Nunca borrar el manifiesto para forzar.
+- Only registered aliases are accepted; paths and usernames are validated before transport.
+- JSON travels over stdin; messages and paths are not interpolated into Windows shell commands.
+- Host verification stays enabled; internal OpenCode credentials are never copied.
+- The control socket lives in a private user directory, not a shared temporary directory.
+- SQLite and mailboxes are private data. Installation paths and the environment must
+  belong to the user and must not be writable by others.
+- Files are limited to 1 MiB, checked with SHA256, and created without overwriting.
+  A matching hash confirms integrity, not content trustworthiness or authenticity.
+- Symlink checks do not fully defend against races caused by malicious processes
+  running as the same user. Do not share this installation between untrusted users.
+- Blocking some credential filenames is only an additional precaution; it does not
+  detect secrets inside harmless-looking files. Review file contents manually.
+- Each machine is limited to 30 sends per hour; this is not a spending guarantee.
+- Ambiguous POSTs are not retried. Exactly-once delivery is not guaranteed.
+  A received file can remain without a notification if the subsequent POST fails.
+- There is no automatic reconciliation of `sending`/`uncertain` states or agent cancellation.
+- Existing session permissions remain in force. `create-session` requests `ask`
+  permissions; it neither enables tools automatically nor starts model generation.
+- Deployment checks remote changes against a manifest and hashes. Files are replaced
+  atomically one at a time, not as a transaction across the entire tree. Partial
+  failures can require manual review. Never delete the manifest to force an update.
 
-## Datos que no se publican
+## Data excluded from publication
 
-`routes.json`, `.state/`, bandejas, sockets, logs, backups, tokens, identidades,
-IPs operativas, huellas SSH, IDs reales de sesiones o mensajes e informes de ejecución.
-`audit_public.py` aplica una allowlist y heurísticas; no sustituye revisión humana ni
-un escáner de secretos. No usarlo como certificación de ausencia de datos personales.
+`routes.json`, `.state/`, mailboxes, sockets, logs, backups, tokens, private identities,
+operational IPs, SSH fingerprints, real session/message IDs, and execution reports.
+`audit_public.py` uses an allowlist and heuristics; it does not replace human review
+or a secret scanner. Do not treat it as certification that no private data exists.
 
-## Incidentes
+## Incident handling
 
-Detener el relay y desconectar el MCP afectado sin cancelar agentes. Preservar estado,
-revisar destinos y mensajes antes de cualquier reenvío. No adjuntar SQLite ni logs sin
-saneamiento. Canal privado para reportar vulnerabilidades: pendiente de definir con
-el owner antes de una versión estable; no abrir issues públicos con secretos.
-El repositorio inicial es un prototipo experimental, no una oferta de servicio.
+Stop the relay and disconnect the affected MCP server without cancelling agents.
+Preserve state and review destinations and messages before any resend. Do not attach
+SQLite databases or unsanitized logs. A private vulnerability reporting channel
+must be agreed with the owner before a stable release; never post secrets in public issues.
+The initial repository is an experimental prototype, not a hosted service offering.

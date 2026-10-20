@@ -77,10 +77,41 @@ class PublicTests(unittest.TestCase):
         text = skill.read_text()
         self.assertTrue(text.startswith("---\nname: opencode-connect\nlicense: MIT\ndescription:"))
         self.assertIn("Coordinate remote OpenCode agents", text)
-        self.assertIn("Coordinar agentes", text)
+        self.assertIn("user-authorized", text)
         for relative in ("../../README.md", "../../SECURITY.md"):
             self.assertTrue((skill.parent / relative).is_file())
-        self.assertIn("No instalar nada automáticamente", text)
+        self.assertIn("Do not install anything automatically", text)
+
+    def test_english_project_policy_and_documentation(self):
+        instructions = (ROOT / "AGENTS.md").read_text()
+        self.assertIn("Use English for all project documentation", instructions)
+        self.assertIn("Preserve Unicode coverage", instructions)
+        headings = {
+            "SECURITY.md": "# Security and limitations",
+            "docs/decisions.md": "# Architecture decisions",
+            "docs/release-checklist.md": "# Publication and stable-release checklist",
+        }
+        for name, heading in headings.items():
+            with self.subTest(file=name):
+                self.assertTrue((ROOT / name).read_text().startswith(heading))
+        self.assertIn("Directed communication", mcp_server.INSTRUCTIONS)
+        with TemporaryDirectory(prefix="english-mcp-") as folder:
+            result = mcp_server.handle({"id": 1, "method": "tools/call", "params": {
+                "name": "send", "arguments": {"to": "wsl", "text": "hello"}}}, Path(folder))
+        self.assertTrue(result["result"]["isError"])
+        self.assertIn("Missing ai.opencode/sessionID", result["result"]["content"][0]["text"])
+
+    def test_cli_help_is_in_english(self):
+        cases = [("bridge.py", [], "transport"),
+                 ("collab.py", ["send"], "Alias of the registered source session"),
+                 ("deploy.py", [], "Explicitly copy routes.json")]
+        for script, arguments, expected in cases:
+            with self.subTest(script=script):
+                result = subprocess.run([sys.executable, "-B", str(ROOT / script),
+                                         *arguments, "--help"], cwd=ROOT,
+                                        capture_output=True, text=True, timeout=10)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn(expected, result.stdout)
 
     def test_detached_export_imports_and_cli_without_personal_files(self):
         # Isolated search path; exported files only. No ancestor config/import fallback.
@@ -147,7 +178,7 @@ class DeploymentTests(unittest.TestCase):
     def test_conflict_preflight_no_partial_overwrite(self):
         deploy.apply_bundle(self.request({"README.md": b"original", "SECURITY.md": b"security"}))
         (self.root / "SECURITY.md").write_bytes(b"user change")
-        with self.assertRaisesRegex(ValueError, "no administrado"):
+        with self.assertRaisesRegex(ValueError, "unmanaged"):
             deploy.apply_bundle(self.request({"README.md": b"replacement", "SECURITY.md": b"replacement"}))
         self.assertEqual((self.root / "README.md").read_bytes(), b"original")
         self.assertEqual((self.root / "SECURITY.md").read_bytes(), b"user change")

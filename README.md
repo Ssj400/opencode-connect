@@ -208,8 +208,15 @@ A future HTTP skill source requires an `index.json` catalog, not just a GitHub U
 [Release and integration checklist](docs/release-checklist.md).
 OpenCode V2 references: `https://opencode.ai/v2/docs/mcp-servers`,
 `https://opencode.ai/v2/docs/api`, and `https://opencode.ai/v2/docs/skills`.
-Local tests do not need access to these sites. Supporting documentation and runtime
-messages are currently primarily in Spanish.
+Local tests do not need access to these sites. Documentation, runtime messages,
+and contributor instructions are maintained in English; exchanged user messages
+can use any language.
+
+## Platform roadmap
+
+The next platform priorities are **Linux ↔ Linux** and **Windows ↔ Windows**,
+followed by macOS. Native Windows and WSL are distinct targets. These adapters
+are not implemented yet; the current transport remains Linux → Windows SSH → WSL.
 
 ## License
 

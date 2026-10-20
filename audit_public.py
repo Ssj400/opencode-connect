@@ -20,18 +20,18 @@ def findings(text):
         except ValueError:
             continue
         if not any(address in network for network in NETWORKS):
-            issues.add("IP fuera de redes de documentación/loopback")
+            issues.add("IP address outside documentation or loopback networks")
     for owner in re.findall(r"/(?:home|Users)/([A-Za-z0-9_.-]+)(?:/|\b)", text):
         if owner not in {"example", "user"}:
-            issues.add("Ruta de hogar identificable")
+            issues.add("Identifiable home directory path")
     if re.search(r"\bses_[A-Za-z0-9]{20,}\b|\bmsg_[a-f0-9]{32}\b", text):
-        issues.add("ID de sesión/mensaje con apariencia operativa")
+        issues.add("Session or message ID appears operational")
     if re.search(r"SHA256:[A-Za-z0-9+/]{40,}={0,2}", text):
-        issues.add("Huella SSH con apariencia operativa")
+        issues.add("SSH fingerprint appears operational")
     if re.search(r"-----BEGIN [A-Z ]*PRIVATE KEY-----", text):
-        issues.add("Clave privada")
+        issues.add("Private key")
     if re.search(r"\b(?:gh[pousr]_[A-Za-z0-9]{24,}|sk-[A-Za-z0-9_-]{24,})\b", text):
-        issues.add("Token con apariencia secreta")
+        issues.add("Potential secret token")
     return sorted(issues)
 
 
@@ -41,18 +41,18 @@ def audit(root):
     for name in FILES:
         path = root / name
         if path.is_symlink():
-            issues.append(f"{name}: enlace no permitido")
+            issues.append(f"{name}: symlinks are not allowed")
             continue
         if any((root / parent).is_symlink() for parent in Path(name).parents):
-            issues.append(f"{name}: directorio enlazado")
+            issues.append(f"{name}: linked directory")
             continue
         if not path.is_file():
-            issues.append(f"{name}: archivo ausente")
+            issues.append(f"{name}: missing file")
             continue
         try:
             text = path.read_text(encoding="utf-8")
         except UnicodeError:
-            issues.append(f"{name}: no es texto UTF-8")
+            issues.append(f"{name}: not UTF-8 text")
             continue
         issues.extend(f"{name}: {issue}" for issue in findings(text))
     allowed_dirs = {str(parent) for name in FILES for parent in Path(name).parents}
@@ -63,18 +63,18 @@ def audit(root):
         for path in sorted(folder.iterdir()):
             relative = path.relative_to(root)
             if path.is_symlink():
-                issues.append(f"{relative}: enlace no exportable")
+                issues.append(f"{relative}: symlinks cannot be exported")
             elif relative == Path(".git"):
                 continue
             elif path.name in ignored and path.is_dir():
                 continue
             elif path.is_dir():
                 if str(relative) not in allowed_dirs:
-                    issues.append(f"{relative}: directorio fuera de lista (posible estado privado)")
+                    issues.append(f"{relative}: directory outside the allowlist (potential private state)")
                 else:
                     visit(path)
             elif str(relative) not in FILES:
-                issues.append(f"{relative}: archivo fuera de lista")
+                issues.append(f"{relative}: file outside the allowlist")
     visit(root)
     return sorted(set(issues))
 
@@ -84,9 +84,9 @@ def main():
     for issue in issues:
         print(issue)
     if issues:
-        print("Auditoría fallida; revisar, no borrar automáticamente archivos del usuario.")
+        print("Audit failed; review findings without automatically deleting user files.")
         return 1
-    print(f"Auditoría OK: {len(FILES)} archivos permitidos; sin coincidencias heurísticas.")
+    print(f"Audit passed: {len(FILES)} allowlisted files; no heuristic matches.")
     return 0
 
 

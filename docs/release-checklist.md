@@ -1,38 +1,47 @@
-# Checklist de publicación y futura versión estable
+# Publication and stable-release checklist
 
-## Decisiones pendientes
+## Release decisions
 
-- [x] Owner y repositorio público: https://github.com/Ssj400/opencode-connect.
-- [x] MIT aprobada por el propietario; archivo `LICENSE` incluido en la exportación.
-- [ ] Definir canal privado de reportes de seguridad.
-- [x] Publicación experimental del contenido generalizado autorizada por el propietario.
+- [x] Owner and public repository: https://github.com/Ssj400/opencode-connect.
+- [x] Owner-approved MIT license, included as `LICENSE` in exports.
+- [ ] Define a private security reporting channel.
+- [x] Owner authorization to publish the generalized experimental edition.
 
-## Exportación y pruebas locales
+## Export and local testing
 
-- [x] Exportar solo `deploy.FILES`, nunca la carpeta personal completa.
-- [x] Ejecutar `python3 -B -m unittest discover -v` (50 pruebas) y `python3 -B audit_public.py`.
-- [x] Revisar manualmente los archivos exportados además de la auditoría heurística.
-- [x] Revisar el conjunto exacto destinado a Git: no config real, estado, logs, backups,
-      artefactos de ejecución, enlaces a carpetas privadas ni historial personal.
-- [x] Probar la exportación aislada y fuera de la instalación operativa (suite pública).
-- [x] Comprobar rutas relativas de la skill y usar URL real del repositorio creado.
-- [x] Verificar que no hay `routes.json` operativo en la exportación.
+- [x] Export only `deploy.FILES`, never the complete personal installation.
+- [x] Run `python3 -B -m unittest discover -v` and `python3 -B audit_public.py`.
+- [x] Manually review exported files in addition to the heuristic audit.
+- [x] Review the exact Git contents: no operational configuration, state, logs,
+      backups, runtime artifacts, private directory links, or personal history.
+- [x] Test an isolated export outside the operational installation (public test suite).
+- [x] Check relative skill links and use the created repository's actual URL.
+- [x] Verify that the export does not contain an operational `routes.json`.
+- [x] Use English throughout documentation, instructions, comments, and runtime messages.
 
-## Integración futura — NO comprobada en esta edición
+## Future integration — NOT verified in this edition
 
-Requiere autorización explícita, infraestructura aislada y presupuesto para modelos.
-No ejecutar contra bandejas o sesiones reales de trabajo.
+Requires explicit authorization, isolated infrastructure, and a model budget.
+Do not run against working sessions or operational mailboxes.
 
-- [ ] Registrar versiones exactas de Python, OpenCode V2, Windows/WSL y OpenSSH.
-- [ ] Verificar SSH, autenticación local API y handshake MCP en ambos equipos.
-- [ ] Probar queue en ambos sentidos y metadata de la sesión invocadora.
-- [ ] Probar steer durante generación; distinguirlo de interrumpir herramientas bloqueadas.
-- [ ] Transferir archivos inocuos bidireccionales a bandejas totalmente aisladas.
-- [ ] Comprobar duplicados, desconexiones a mitad de archivo/POST y reinicio del relay.
-- [ ] Comprobar deployment, rechazo de cambios ajenos y recuperación de fallo parcial.
-- [ ] Comprobar `create-session` con permisos ask sin iniciar tareas.
-- [ ] No extrapolar estos resultados a nuevas versiones o transportes no probados.
+- [ ] Record exact Python, OpenCode V2, Windows/WSL, and OpenSSH versions.
+- [ ] Verify SSH, local API authentication, and the MCP handshake on both machines.
+- [ ] Test queue delivery in both directions and the caller's session metadata.
+- [ ] Test steer during generation; distinguish it from interrupting blocked tools.
+- [ ] Transfer harmless files in both directions using fully isolated mailboxes.
+- [ ] Check duplicates, mid-file/mid-POST disconnections, and relay restarts.
+- [ ] Check deployment, rejection of others' changes, and recovery after partial failure.
+- [ ] Check `create-session` with ask permissions without starting tasks.
+- [ ] Do not extrapolate these results to untested versions or transports.
 
-Esta checklist no autoriza por sí sola operaciones Git. La publicación inicial
-experimental fue solicitada expresamente por el propietario; no implica que los
-pendientes de seguridad o integración estén resueltos.
+## Next platform milestones
+
+- [ ] Linux ↔ Linux using a native Linux adapter.
+- [ ] Windows ↔ Windows, distinguishing native Windows from WSL.
+- [ ] macOS after the Linux and Windows milestones.
+
+These are priorities, not supported configurations in the current release.
+
+This checklist does not independently authorize Git operations. The owner explicitly
+requested the initial experimental publication; that does not resolve outstanding
+security or integration work.
