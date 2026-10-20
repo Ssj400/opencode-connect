@@ -23,6 +23,30 @@ from test_bridge import fixture
 ROOT = Path(__file__).resolve().parent
 
 
+def exported_modules():
+    """Importable non-test modules in the export allowlist."""
+    return [name[:-3] for name in deploy.FILES
+            if name.endswith(".py") and "/" not in name and not name.startswith("test_")]
+
+
+def exported_test_modules():
+    """Every exported test module except this one, which audits the export itself."""
+    return [name[:-3] for name in deploy.FILES
+            if name.startswith("test_") and name.endswith(".py") and name != "test_public.py"]
+
+
+def command_line_scripts():
+    """Exported modules with an argparse entry point, so `--help` must work."""
+    scripts = []
+    for module in exported_modules():
+        tree = ast.parse((ROOT / f"{module}.py").read_text())
+        guarded = any(isinstance(node, ast.If) and "__main__" in ast.unparse(node.test) for node in tree.body)
+        parses = any(isinstance(node, ast.Attribute) and node.attr == "ArgumentParser" for node in ast.walk(tree))
+        if guarded and parses:
+            scripts.append(f"{module}.py")
+    return scripts
+
+
 class PublicTests(unittest.TestCase):
     def test_export_has_no_private_data_or_extra_files(self):
         self.assertEqual(audit_public.audit(ROOT), [])
@@ -61,9 +85,8 @@ class PublicTests(unittest.TestCase):
         self.assertEqual(audit_public.findings("192.0.2.10 ses_REPLACE_LINUX /home/example/project"), [])
 
     def test_no_agent_cancellation_or_auto_chat(self):
-        for name in ("bridge.py", "collab.py", "mcp_server.py", "core.py",
-                     "opencode_adapter.py", "transports.py"):
-            tree = ast.parse((ROOT / name).read_text())
+        for module in exported_modules():
+            tree = ast.parse((ROOT / f"{module}.py").read_text())
             strings = [n.value for n in ast.walk(tree) if isinstance(n, ast.Constant) and isinstance(n.value, str)]
             self.assertFalse(any("/interrupt" in value for value in strings))
             self.assertFalse(any(isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == "chat"
@@ -122,24 +145,26 @@ class PublicTests(unittest.TestCase):
             for name in deploy.FILES:
                 target = root / name; target.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copyfile(ROOT / name, target)
-            code = '''import sys,pathlib,unittest
+            code = '''import importlib,json,sys,pathlib,unittest
 root=pathlib.Path(sys.argv[1]);sys.path.insert(0,str(root))
-import config,bridge,collab,mcp_server,deploy,audit_public,core,opencode_adapter,transports,local_bridge,local_mcp_server
-for module in (config,bridge,collab,mcp_server,deploy,audit_public,core,opencode_adapter,transports,local_bridge,local_mcp_server):
-    assert pathlib.Path(module.__file__).parent == root
+spec=json.loads(sys.argv[2])
+for name in spec["modules"]:
+    assert pathlib.Path(importlib.import_module(name).__file__).parent == root, name
+import audit_public,config,mcp_server
 assert audit_public.audit(root) == []
 try: config.load_config(root)
 except config.BridgeError: pass
 else: raise AssertionError("unexpected configuration")
 assert mcp_server.handle({"id":1,"method":"initialize"})["result"]["serverInfo"]["name"] == "opencode-connect"
-suite=unittest.defaultTestLoader.loadTestsFromNames(["test_bridge", "test_collab", "test_core", "test_adapters", "test_chat", "test_local", "test_local_identity"])
+suite=unittest.defaultTestLoader.loadTestsFromNames(spec["tests"])
 result=unittest.TextTestRunner(verbosity=0).run(suite)
 sys.exit(0 if result.wasSuccessful() else 1)
 '''
-            result = subprocess.run([sys.executable, "-B", "-I", "-c", code, folder],
-                                    cwd=folder, capture_output=True, text=True, timeout=60)
+            spec = json.dumps({"modules": exported_modules(), "tests": exported_test_modules()})
+            result = subprocess.run([sys.executable, "-B", "-I", "-c", code, folder, spec],
+                                    cwd=folder, capture_output=True, text=True, timeout=120)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-            for script in ("bridge.py", "collab.py", "deploy.py", "local_bridge.py"):
+            for script in command_line_scripts():
                 result = subprocess.run([sys.executable, "-B", str(root / script), "--help"],
                                         cwd=folder, capture_output=True, text=True, timeout=10)
                 self.assertEqual(result.returncode, 0, result.stderr)
