@@ -1,0 +1,14 @@
+{
+  "side": "linux",
+  "peers": {
+    "linux": {"side": "linux", "sessionID": "ses_REPLACE_LINUX"},
+    "wsl": {"side": "wsl", "sessionID": "ses_REPLACE_WSL"}
+  },
+  "ssh": {
+    "host": "192.0.2.10",
+    "ssh_user": "Example User",
+    "wsl_user": "example",
+    "remote_opencode": "/opt/opencode/bin/opencode",
+    "remote_directory": "/srv/opencode-connect"
+  }
+}

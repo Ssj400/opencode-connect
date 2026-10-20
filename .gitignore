@@ -1,0 +1,15 @@
+# Private installation and runtime; never publish.
+routes.json
+.state/
+outgoing/
+inbox/
+__pycache__/
+*.py[cod]
+.test-tmp/
+.env
+.env.*
+*.sqlite*
+*.log
+*.bak
+*.sock
+*~
