@@ -20,6 +20,7 @@ from bridge import BridgeError, Endpoint
 from config import load_config, validate_config, private_directory
 from core import AddressBook, DeliveryAdapters, Peer, deliver_message, relay_once
 from opencode_adapter import OpenCodeAdapter
+from transports import CommandError
 
 ROOT = Path(__file__).resolve().parent
 MAX_TEXT = 12000
@@ -200,9 +201,19 @@ def rpc(request, root=ROOT):
 
 
 def remote_rpc(cfg, request):
-    return endpoint(cfg, "wsl").remote_exec(
-        ["python3", cfg["ssh"]["remote_directory"] + "/collab.py", "rpc"],
-        data=json.dumps(request, ensure_ascii=False), timeout=40)
+    try:
+        return endpoint(cfg, "wsl").remote_exec(
+            ["python3", cfg["ssh"]["remote_directory"] + "/collab.py", "rpc"],
+            data=json.dumps(request, ensure_ascii=False), timeout=40)
+    except CommandError as exc:
+        try:
+            error = json.loads(exc.stdout)
+        except (ValueError, UnicodeError):
+            error = None
+        if (isinstance(error, dict) and error.get("_tag") == "BridgeError"
+                and isinstance(error.get("message"), str)):
+            raise BridgeError(error["message"]) from exc
+        raise
 
 
 def deliver(cfg, job, root=ROOT, origin_side=None):

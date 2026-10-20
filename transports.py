@@ -32,6 +32,24 @@ def decode_response(output):
         raise BridgeError("The command did not return valid JSON.") from exc
 
 
+def without_ssh_advisories(error):
+    """Remove OpenSSH advisory lines without interpreting application errors."""
+    return " ".join(line.strip() for line in str(error).splitlines()
+                    if line.strip() and not line.lstrip().startswith("**"))
+
+
+class CommandError(BridgeError):
+    """A failed command with its original output available to protocol owners."""
+
+    def __init__(self, returncode, stdout, stderr):
+        self.returncode = returncode
+        self.stdout = stdout
+        self.stderr = stderr
+        message = without_ssh_advisories(stderr.decode("utf-8", errors="replace"))
+        super().__init__(message or stdout.decode("utf-8", errors="replace").strip()[:300]
+                         or f"Command exited with status {returncode}.")
+
+
 def run_json(command, payload=None, timeout=30, cwd=None):
     try:
         result = subprocess.run(command, input=payload, capture_output=True,
@@ -41,8 +59,7 @@ def run_json(command, payload=None, timeout=30, cwd=None):
     except OSError as exc:
         raise BridgeError(str(exc)) from exc
     if result.returncode:
-        raise BridgeError(result.stderr.decode("utf-8", errors="replace").strip()
-                          or f"Command exited with status {result.returncode}.")
+        raise CommandError(result.returncode, result.stdout, result.stderr)
     return decode_response(result.stdout)
 
 

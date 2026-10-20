@@ -75,6 +75,38 @@ class ConfigTests(unittest.TestCase):
 
 
 class BridgeTests(unittest.TestCase):
+    def test_command_failure_preserves_output_and_uses_stdout_without_ssh_warning(self):
+        stdout = b'{"_tag":"BridgeError","message":"Insecure private directory: /srv/example"}'
+        stderr = b'** WARNING: connection is not using a post-quantum key exchange algorithm.\n'
+        with patch("transports.subprocess.run", return_value=SimpleNamespace(
+                returncode=1, stdout=stdout, stderr=stderr)) as run:
+            with self.assertRaises(transports.CommandError) as caught:
+                transports.run_json(["example"])
+        error = caught.exception
+        self.assertEqual((error.returncode, error.stdout, error.stderr), (1, stdout, stderr))
+        self.assertEqual(str(error), stdout.decode())
+        run.assert_called_once()
+
+    def test_command_failure_filters_stderr_and_bounds_stdout_fallback(self):
+        for stdout, stderr, expected in (
+                (b"not JSON", b"** advisory\n Permission denied.\n", "Permission denied."),
+                (b"x" * 1000, b"** advisory\n", "x" * 300),
+                (b"", b"** advisory\n", "Command exited with status 7.")):
+            with self.subTest(expected=expected), patch("transports.subprocess.run", return_value=
+                    SimpleNamespace(returncode=7, stdout=stdout, stderr=stderr)):
+                with self.assertRaises(transports.CommandError) as caught:
+                    transports.run_json(["example"])
+                self.assertEqual(str(caught.exception), expected)
+
+    def test_command_timeout_remains_a_bridge_error_without_retry(self):
+        with patch("transports.subprocess.run", side_effect=subprocess.TimeoutExpired(
+                ["example"], 3)) as run:
+            with self.assertRaises(config.BridgeError) as caught:
+                transports.run_json(["example"], timeout=3)
+        self.assertNotIsInstance(caught.exception, transports.CommandError)
+        self.assertEqual(str(caught.exception), "Request timed out; the message will not be retried.")
+        run.assert_called_once()
+
     def test_check_small_read_only_requests(self):
         endpoint = Mock()
         endpoint.call.side_effect = [{"version": "2.0.0"}, {"data": []}]
@@ -216,6 +248,17 @@ class DoctorTests(unittest.TestCase):
         (argv, request), = self.requests
         self.assertEqual(argv, ["python3", "-I", "-c", deploy.inspection_script()])
         self.assertEqual(request, {"root": "/srv/Example Project", "files": list(self.files)})
+
+    def test_remote_inspection_failure_reports_stdout_instead_of_ssh_advisory(self):
+        self.mocks["bridge.Endpoint.remote_exec"].side_effect = lambda *args, **kwargs: transports.run_json(
+            ["example"])
+        with patch("transports.subprocess.run", return_value=SimpleNamespace(
+                returncode=1, stdout=b"Remote inspection failed: private directory is insecure.",
+                stderr=b"** WARNING: post-quantum key exchange unavailable.\n")) as run:
+            summary = self.finding(bridge.diagnose(self.root), "Remote installation", bridge.FAIL)[2]
+        self.assertIn("private directory is insecure", summary)
+        self.assertNotIn("post-quantum", summary)
+        run.assert_called_once()
 
     def test_unreachable_machine_skips_remote_layers_but_reports_delivery(self):
         self.probe = transports.Probe(False, "unreachable", "No route to host")
