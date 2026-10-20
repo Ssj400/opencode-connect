@@ -4,12 +4,14 @@ This infrastructure layer knows neither agent session IDs nor harness API routes
 """
 
 import base64
+import errno
 import hashlib
 import json
 import os
 from pathlib import Path
+import socket
 import subprocess
-from typing import Any, Protocol
+from typing import Any, NamedTuple, Protocol
 
 from config import private_directory, validate_ssh
 from core import BridgeError
@@ -66,6 +68,33 @@ def socket_path(ssh_user, host):
     return str(path)
 
 
+class Probe(NamedTuple):
+    """One TCP connection attempt. `reason` is stable for callers: open, refused,
+    unreachable, timeout, unresolved, or error."""
+    ok: bool
+    reason: str
+    detail: str
+
+
+def tcp_probe(host, port, timeout=5):
+    """Open and close one TCP connection, reading an optional banner; sends nothing."""
+    try:
+        with socket.create_connection((host, port), timeout=timeout) as connection:
+            try:
+                banner = connection.recv(256).decode("utf-8", "replace").strip()
+            except OSError:
+                banner = ""
+        return Probe(True, "open", banner)
+    except socket.gaierror as exc:
+        return Probe(False, "unresolved", exc.strerror or str(exc))
+    except TimeoutError:
+        return Probe(False, "timeout", f"no answer within {timeout} s")
+    except OSError as exc:
+        reason = {errno.ECONNREFUSED: "refused", errno.EHOSTUNREACH: "unreachable",
+                  errno.ENETUNREACH: "unreachable"}.get(exc.errno, "error")
+        return Probe(False, reason, exc.strerror or str(exc))
+
+
 class LocalCommandTransport:
     def run(self, argv, *, timeout=30, cwd=None, data=None):
         payload = data.encode("utf-8") if data is not None else None
@@ -91,6 +120,37 @@ class WindowsWslSshTransport:
         command[1:1] = ["-M", "-N", "-f", "-o", "ControlPersist=600"]
         if subprocess.run(command).returncode:
             raise BridgeError("Could not open a reusable SSH connection.")
+
+    def destination(self):
+        """Effective hostname and port after the user's OpenSSH configuration; no network."""
+        command = ["ssh", "-G", "-l", self.options["ssh_user"], self.options["host"]]
+        try:
+            result = subprocess.run(command, capture_output=True, text=True, timeout=10)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise BridgeError(f"Could not read the OpenSSH client configuration: {exc}") from exc
+        if result.returncode:
+            raise BridgeError(result.stderr.strip() or "ssh -G failed.")
+        values = {}
+        for line in result.stdout.splitlines():
+            key, _, value = line.partition(" ")
+            values.setdefault(key.lower(), value.strip())
+        try:
+            return values.get("hostname") or self.options["host"], int(values.get("port", "22"))
+        except ValueError as exc:
+            raise BridgeError("ssh -G returned an invalid port.") from exc
+
+    def master_alive(self):
+        """Ask the local control socket whether the reusable connection is alive.
+
+        No authentication and no new connection: `-O check` only talks to the socket.
+        """
+        control = socket_path(self.options["ssh_user"], self.options["host"])
+        command = ["ssh", "-O", "check", "-o", f"ControlPath={control}",
+                   "-l", self.options["ssh_user"], self.options["host"]]
+        try:
+            return subprocess.run(command, capture_output=True, timeout=10).returncode == 0
+        except (OSError, subprocess.TimeoutExpired):
+            return False
 
     def run(self, argv, *, timeout=30, cwd=None, data=None):
         # Variable arguments travel on stdin, never through the Windows shell.

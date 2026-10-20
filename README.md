@@ -149,6 +149,7 @@ requires renewing SSH keys or certificates.
 | `git pull` | Source files in that checkout only | To download published changes; it does not update another machine |
 | `python3 bridge.py connect` | Opens an authenticated reusable SSH connection | When interactive authentication is needed after expiry, restart, or a network change |
 | `python3 bridge.py check` | Checks both local APIs; may start their local services | To verify access without generating responses |
+| `python3 bridge.py doctor` | Nothing; reports each layer and the next step | When messages do not arrive or a step above fails |
 | `python3 deploy.py` | Copies managed code/docs to the configured WSL directory | After code updates, not after every SSH reconnect |
 | `/mcps` → reconnect `laptop_bridge` | Reloads that project's MCP process and tools | After changing MCP code or its installation path, on each affected machine |
 | `python3 collab.py relay` | Starts message delivery | When ready to deliver queued messages; this can trigger model usage |
@@ -268,6 +269,16 @@ permissions. Session creation is not exposed through MCP.
 not task completion. If a process dies in `sending`, that message is not claimed
 again after restart. `uncertain` messages are not retried either. Review them
 manually with the user, preserving IDs and state. Never delete SQLite to clear a queue.
+
+Start with `python3 bridge.py doctor` on the Linux coordinator. In order, it checks
+the configuration, the local OpenCode API, the network path to Windows, the reusable
+SSH connection, the WSL OpenCode API, whether the WSL files match this checkout
+(including Python 3.12+, a private `.state`, and the WSL configuration), the relay,
+and both queues. Each problem comes with its next step; exit status 1 means at least
+one failure. It is read-only: it sends no messages, claims nothing, deploys or
+reconnects nothing, and never starts the relay. Like `check`, the OpenCode CLI may
+discover or start its local service. MCP setup lives in each OpenCode project and is
+not checked; use `/mcps` and `whoami` there.
 
 - MCP disconnected: check Python/script paths, project configuration, and `/mcps`.
 - Unknown chat destination: obtain its exact address; registration is not needed for text.

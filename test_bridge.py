@@ -1,16 +1,22 @@
+import contextlib
 import copy
+import hashlib
+import io
 import json
 import os
 from pathlib import Path
 import stat
 import subprocess
+import sys
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
 
 import bridge
+import collab
 import config
+import deploy
 import transports
 
 
@@ -146,6 +152,256 @@ class BridgeTests(unittest.TestCase):
             with patch.dict(os.environ, {"XDG_RUNTIME_DIR": str(link)}):
                 with self.assertRaises(config.BridgeError):
                     transports.socket_path("example", "192.0.2.10")
+
+
+class DoctorTests(unittest.TestCase):
+    """Doctor wiring with every effect replaced; each probe is tested in its own layer."""
+
+    def setUp(self):
+        self.tmp = TemporaryDirectory(prefix="doctor-")
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        (self.root / "routes.json").write_text(json.dumps(fixture()))
+        self.files = ("example.py", "docs/example.md")
+        for name in self.files:
+            (self.root / name).parent.mkdir(parents=True, exist_ok=True)
+            (self.root / name).write_text(f"content of {name}")
+        hashes = {name: hashlib.sha256((self.root / name).read_bytes()).hexdigest() for name in self.files}
+        self.inspection = {"python": [3, 12, 3], "installed": True, "files": dict(hashes),
+                           "manifest": dict(hashes), "state_private": True,
+                           "config": {"side": "wsl", "peers": fixture()["peers"]},
+                           "queue": {"delivered": 2}, "queue_error": None}
+        self.remote_api, self.master = "2.0.26", True
+        self.probe = transports.Probe(True, "open", "SSH-2.0-Example")
+        self.requests, self.mocks = [], {}
+        for target, kwargs in (
+                ("deploy.FILES", {"new": self.files}),
+                ("bridge.tcp_probe", {"side_effect": lambda host, port: self.probe}),
+                ("transports.WindowsWslSshTransport.destination", {"return_value": ("192.0.2.10", 22)}),
+                ("transports.WindowsWslSshTransport.master_alive", {"side_effect": lambda: self.master}),
+                ("bridge.probe_api", {"side_effect": self.api}),
+                ("bridge.Endpoint.remote_exec", {"side_effect": self.execute})):
+            patcher = patch(target, **kwargs)
+            self.mocks[target] = patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def api(self, endpoint):
+        result = self.remote_api if endpoint.remote else "2.0.32"
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+    def execute(self, argv, timeout=30, cwd=None, data=None):
+        self.requests.append((argv, json.loads(data)))
+        return self.inspection
+
+    def finding(self, findings, area, status=None):
+        matches = [item for item in findings if item[1] == area and status in (None, item[0])]
+        self.assertTrue(matches, f"no {status or 'any'} finding for {area}: {findings}")
+        return matches[0]
+
+    def area_summaries(self, findings, area, status):
+        return [summary for state, name, summary, _ in findings if name == area and state == status]
+
+    def test_healthy_pair_reports_every_layer_without_failures(self):
+        findings = bridge.diagnose(self.root)
+        self.assertEqual([area for _, area, _, _ in findings], [
+            "Configuration", "Local OpenCode", "Network", "SSH connection", "Remote OpenCode",
+            "Remote installation", "Relay", "Queues"])
+        self.assertNotIn(bridge.FAIL, [status for status, *_ in findings])
+        self.assertEqual(self.finding(findings, "Local OpenCode", bridge.OK)[2], "OpenCode 2.0.32")
+        self.assertIn("2 files match", self.finding(findings, "Remote installation", bridge.OK)[2])
+        self.assertEqual(self.finding(findings, "Relay")[0], bridge.WARN)
+        self.assertEqual(self.finding(findings, "Queues", bridge.OK)[2], "linux: empty | wsl: 2 delivered")
+        (argv, request), = self.requests
+        self.assertEqual(argv, ["python3", "-I", "-c", deploy.inspection_script()])
+        self.assertEqual(request, {"root": "/srv/Example Project", "files": list(self.files)})
+
+    def test_unreachable_machine_skips_remote_layers_but_reports_delivery(self):
+        self.probe = transports.Probe(False, "unreachable", "No route to host")
+        findings = bridge.diagnose(self.root)
+        status, _, summary, hint = self.finding(findings, "Network")
+        self.assertEqual((status, summary), (bridge.FAIL, "192.0.2.10:22: No route to host"))
+        self.assertIn("asleep", hint)
+        for area in ("SSH connection", "Remote OpenCode", "Remote installation"):
+            self.assertEqual(self.finding(findings, area)[0], bridge.SKIP)
+        self.assertIn("wsl: not checked", self.finding(findings, "Queues")[2])
+        self.assertEqual(self.requests, [])
+        self.mocks["transports.WindowsWslSshTransport.master_alive"].assert_not_called()
+
+    def test_closed_connection_points_to_connect_and_hides_ssh_advisories(self):
+        self.master = False
+        self.remote_api = config.BridgeError(
+            "** WARNING: connection is not using a post-quantum key exchange algorithm.\n"
+            "** This session may be vulnerable to \"store now, decrypt later\" attacks.\n"
+            "Example User@192.0.2.10: Permission denied (publickey,password).")
+        findings = bridge.diagnose(self.root)
+        status, _, summary, hint = self.finding(findings, "SSH connection")
+        self.assertEqual((status, hint), (bridge.FAIL, bridge.CONNECT_HINT))
+        self.assertNotIn("post-quantum", summary)
+        self.assertEqual(self.finding(findings, "Remote OpenCode")[0], bridge.SKIP)
+        self.assertEqual(self.requests, [])
+
+    def test_key_authentication_without_a_reusable_connection_is_fine(self):
+        self.master = False
+        summary = self.finding(bridge.diagnose(self.root), "SSH connection", bridge.OK)[2]
+        self.assertIn("non-interactive authentication works", summary)
+
+    def test_host_key_problems_never_suggest_disabling_verification(self):
+        self.master = False
+        self.remote_api = config.BridgeError(
+            "** WARNING: connection is not using a post-quantum key exchange algorithm.\n"
+            "Host key verification failed.")
+        _, _, summary, hint = self.finding(bridge.diagnose(self.root), "SSH connection", bridge.FAIL)
+        self.assertEqual(summary, "Host key verification failed.")
+        self.assertIn("never disable host key checking", hint)
+
+    def test_ssh_advisories_are_dropped_from_problems(self):
+        error = ("** WARNING: connection is not using a post-quantum key exchange algorithm.\n"
+                 "** The server may need to be upgraded. See https://openssh.com/pq.html\n"
+                 "Example User@192.0.2.10: Permission denied (publickey).\n")
+        self.assertEqual(bridge.ssh_problem(error), "Example User@192.0.2.10: Permission denied (publickey).")
+        self.assertEqual(bridge.ssh_problem("** WARNING only\n"), "unknown error")
+
+    def test_remote_command_failures_still_inspect_the_installation(self):
+        cases = (("/home/example/wsl-tools/opencode: No such file or directory", "command -v opencode"),
+                 ("Error code: Wsl/Service/WSL_E_DISTRO_NOT_FOUND", "wsl.exe -u example -- true"))
+        for problem, advice in cases:
+            self.remote_api = config.BridgeError(problem)
+            self.requests.clear()
+            findings = bridge.diagnose(self.root)
+            with self.subTest(problem=problem):
+                self.assertIn(advice, self.finding(findings, "Remote OpenCode", bridge.FAIL)[3])
+                self.assertEqual(self.finding(findings, "Remote installation")[0], bridge.OK)
+                self.assertEqual(len(self.requests), 1)
+
+    def test_outdated_and_remotely_edited_files_are_distinguished(self):
+        files, manifest = self.inspection["files"], self.inspection["manifest"]
+        files["example.py"] = manifest["example.py"] = "0" * 64
+        files["docs/example.md"] = "1" * 64
+        findings = bridge.diagnose(self.root)
+        self.assertEqual(self.area_summaries(findings, "Remote installation", bridge.WARN), [
+            "edited in WSL since the last deployment: docs/example.md",
+            "not up to date with this checkout: example.py"])
+        self.assertNotIn(bridge.FAIL, [status for status, *_ in findings])
+        files["docs/example.md"] = manifest["docs/example.md"]
+        files["example.py"] = None
+        self.assertEqual(self.area_summaries(bridge.diagnose(self.root), "Remote installation", bridge.WARN),
+                         ["not up to date with this checkout: example.py"])
+
+    def test_old_python_insecure_state_and_wrong_side_fail(self):
+        self.inspection.update(python=[3, 11, 9], state_private=False, config={"side": "linux", "peers": {}})
+        self.assertEqual(self.area_summaries(bridge.diagnose(self.root), "Remote installation", bridge.FAIL), [
+            "WSL has Python 3.11.9; 3.12+ is required",
+            ".state in WSL is not private (0700, owned by the WSL user)",
+            "routes.json in WSL is invalid or does not declare side=wsl"])
+
+    def test_missing_installation_configuration_or_matching_shortcuts(self):
+        self.inspection["installed"] = False
+        summary = self.finding(bridge.diagnose(self.root), "Remote installation", bridge.FAIL)[2]
+        self.assertEqual(summary, "/srv/Example Project does not exist in WSL")
+        self.inspection.update(installed=True, config=None)
+        summary = self.finding(bridge.diagnose(self.root), "Remote installation", bridge.FAIL)[2]
+        self.assertEqual(summary, "routes.json is missing in WSL")
+        self.inspection["config"] = {"side": "wsl", "peers": {}}
+        summary = self.finding(bridge.diagnose(self.root), "Remote installation", bridge.WARN)[2]
+        self.assertEqual(summary, "shortcuts differ between the two machines")
+
+    def test_waiting_and_ambiguous_messages_are_flagged(self):
+        box = collab.Mailbox(self.root)
+        self.addCleanup(box.db.close)
+        box.enqueue("ses_local", "wsl", "hello")
+        self.inspection["queue"] = {"pending": 2, "uncertain": 1, "delivered": 4}
+        findings = bridge.diagnose(self.root)
+        self.assertEqual(self.finding(findings, "Relay", bridge.WARN)[2], "not running; 3 message(s) waiting")
+        status, _, summary, hint = self.finding(findings, "Queues")
+        self.assertEqual((status, summary),
+                         (bridge.WARN, "linux: 1 pending | wsl: 2 pending, 1 uncertain, 4 delivered"))
+        self.assertIn("never resend", hint)
+
+    def test_failed_messages_are_reported_as_never_sent(self):
+        self.inspection["queue"] = {"failed": 1, "delivered": 3}
+        status, _, summary, hint = self.finding(bridge.diagnose(self.root), "Queues")
+        self.assertEqual((status, summary), (bridge.WARN, "linux: empty | wsl: 1 failed, 3 delivered"))
+        self.assertIn("never sent", hint)
+
+    def test_running_relay_and_remote_without_mailbox(self):
+        self.inspection["queue"] = None
+        with patch("collab.relay_status", return_value={"running": True, "pid": 4321, "stale": False}):
+            findings = bridge.diagnose(self.root)
+        self.assertEqual(self.finding(findings, "Relay", bridge.OK)[2], "running (pid 4321)")
+        self.assertEqual(self.finding(findings, "Queues", bridge.OK)[2], "linux: empty | wsl: no mailbox yet")
+
+    def test_invalid_configuration_stops_before_any_probe(self):
+        (self.root / "routes.json").write_text("{}")
+        findings = bridge.diagnose(self.root)
+        self.assertEqual([(status, area) for status, area, *_ in findings], [(bridge.FAIL, "Configuration")])
+        self.mocks["bridge.probe_api"].assert_not_called()
+        self.mocks["bridge.tcp_probe"].assert_not_called()
+
+    def test_doctor_sends_nothing_and_creates_no_state(self):
+        with patch("collab.Mailbox", side_effect=AssertionError("no writable mailbox")), \
+                patch("collab.relay", side_effect=AssertionError("no relay")), \
+                patch("collab.remote_rpc", side_effect=AssertionError("no mailbox RPC")):
+            findings = bridge.diagnose(self.root)
+        self.assertNotIn(bridge.FAIL, [status for status, *_ in findings])
+        self.assertFalse((self.root / ".state").exists())
+
+    def test_cli_prints_hints_and_fails_only_on_failures(self):
+        cases = (([(bridge.OK, "Configuration", "valid", None),
+                   (bridge.WARN, "Relay", "not running", "Start it.")], 0),
+                 ([(bridge.FAIL, "Network", "192.0.2.10:22: timed out", "Wake it.")], 1))
+        for findings, code in cases:
+            output = io.StringIO()
+            with self.subTest(code=code), patch("bridge.diagnose", return_value=findings), \
+                    patch("sys.argv", ["bridge.py", "doctor"]), contextlib.redirect_stdout(output):
+                self.assertEqual(bridge.main(), code)
+            self.assertIn("-> ", output.getvalue())
+            self.assertIn("/mcps", output.getvalue())
+
+
+class InspectionTests(unittest.TestCase):
+    """The probe that doctor runs in WSL, executed standalone like the deployment receiver."""
+
+    def inspect(self, root, files):
+        result = subprocess.run([sys.executable, "-I", "-c", deploy.inspection_script()], timeout=30,
+                                input=json.dumps({"root": str(root), "files": files}),
+                                capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return json.loads(result.stdout)
+
+    def test_inspection_reports_the_tree_without_changing_it(self):
+        with TemporaryDirectory() as folder:
+            root = Path(folder) / "remote"
+            root.mkdir()
+            cfg = {**fixture(), "side": "wsl"}
+            (root / "routes.json").write_text(json.dumps(cfg))
+            (root / "example.py").write_text("example")
+            box = collab.Mailbox(root)
+            box.enqueue("ses_remote", "linux", "hello")
+            box.db.close()
+            (root / ".state" / "deployment.json").write_text(json.dumps({"example.py": "recorded"}))
+            snapshot = {path: path.read_bytes() for path in root.rglob("*") if path.is_file()}
+            report = self.inspect(root, ["example.py", "missing.py"])
+            self.assertEqual({path: path.read_bytes() for path in root.rglob("*") if path.is_file()}, snapshot)
+        self.assertEqual(report["python"][:2], list(sys.version_info[:2]))
+        self.assertEqual(report["files"], {"example.py": hashlib.sha256(b"example").hexdigest(),
+                                           "missing.py": None})
+        self.assertEqual(report["manifest"], {"example.py": "recorded"})
+        self.assertTrue(report["state_private"])
+        self.assertEqual(report["queue"], {"pending": 1})
+        self.assertEqual(report["config"], {"side": "wsl", "peers": cfg["peers"]})
+
+    def test_inspection_of_insecure_or_missing_trees(self):
+        with TemporaryDirectory() as folder:
+            root = Path(folder) / "remote"
+            (root / ".state").mkdir(parents=True)
+            (root / ".state").chmod(0o755)
+            report = self.inspect(root, [])
+            self.assertEqual((report["state_private"], report["queue"], report["config"]), (False, {}, None))
+            missing = self.inspect(Path(folder) / "absent", ["example.py"])
+            self.assertFalse(missing["installed"])
+            self.assertFalse((Path(folder) / "absent").exists())
 
 
 if __name__ == "__main__":

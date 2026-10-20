@@ -22,6 +22,8 @@ any language; this policy does not restrict messages exchanged through the bridg
 - Use `whoami` for the caller's address and `peers` for optional shortcuts. Do not guess
   destination sessions. Registration is a separate file-transfer requirement, not a chat gate.
 - `pending` does not mean delivered; `delivered` means API acceptance, not task completion.
+- `bridge.py doctor` is the read-only diagnosis. Keep it that way: no sends, claims,
+  relay locks, writable mailboxes, deployments, or reconnections.
 - Stale `sending` and `uncertain` states require human review, never automatic retries.
 - Distinguish source publication, SSH authentication, remote deployment, MCP reload,
   and relay delivery. Never report an update as active remotely after only a push.

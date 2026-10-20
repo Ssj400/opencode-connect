@@ -79,3 +79,19 @@ def check(endpoints):
             elif not isinstance(response, dict) or not isinstance(response.get("data"), list):
                 raise BridgeError(f"{label}: unexpected session list response.")
         print(f"{label}: OpenCode {info['version']}, API accessible.", flush=True)
+
+
+def probe_api(endpoint):
+    """Return the OpenCode V2 version after the same two small reads as check, without printing.
+
+    Creates no session and generates no response.
+    """
+    info = endpoint.call("get", "/api/info")
+    if not isinstance(info, dict) or not isinstance(info.get("version"), str):
+        raise BridgeError("unexpected /api/info response.")
+    if not info["version"].startswith("2."):
+        raise BridgeError(f"OpenCode V2 is required; found {info['version']}.")
+    sessions = endpoint.call("get", "/api/session?limit=1")
+    if not isinstance(sessions, dict) or not isinstance(sessions.get("data"), list):
+        raise BridgeError("unexpected session list response.")
+    return info["version"]

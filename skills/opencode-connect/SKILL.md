@@ -85,6 +85,10 @@ Query `status` once when needed:
 
 With diagnostic authorization, `python3 bridge.py check` makes small requests
 without generating responses; it may discover/start the local OpenCode service.
+When the cause is unknown, prefer `python3 bridge.py doctor` on the Linux coordinator:
+it runs the same kind of read-only checks across configuration, network, SSH, both
+APIs, the WSL installation, the relay, and both queues, and names the next step.
+Report its findings to the user rather than acting on its hints yourself.
 `python3 collab.py peers` and `status` help inspect configuration and queues.
 Do not start `relay` or `relay --once` as a harmless diagnostic: they may deliver
 pending tasks and consume model quota. SSH authentication belongs in the user's

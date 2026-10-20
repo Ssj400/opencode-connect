@@ -55,6 +55,17 @@ A file receiver accepts a message ID and the existing attachment payload and
 returns a destination path and hash. It must enforce file limits, verify integrity,
 avoid overwriting, and never execute content. Transfer happens before notification.
 
+## Diagnostics
+
+`bridge.py doctor` composes read-only probes owned by each layer instead of adding one:
+`tcp_probe`, `destination` (`ssh -G`), and `master_alive` (`ssh -O check`) in
+`transports.py`; `probe_api` in `opencode_adapter.py`; `relay_status` and
+`queue_summary` in `collab.py`; and `inspect_installation` in `deploy.py`. The last is a
+standalone standard-library function sent to WSL like the deployment receiver, so the
+diagnosis also works when the remote installation is outdated or broken. Doctor never
+opens a writable mailbox, takes the relay lock, sends prompts, or calls mailbox RPC.
+Like `check`, it may create the private SSH socket directory.
+
 ## Preserved behavior
 
 - Compatible routes structure, existing MCP tools, SQLite schema, IDs, and CLI commands.

@@ -122,6 +122,63 @@ def apply_bundle(request):
     return hashes
 
 
+def inspect_installation(request):
+    """Standalone read-only probe of a deployed tree for diagnostics; changes nothing."""
+    import hashlib
+    import json
+    import os
+    from pathlib import Path
+    import sqlite3
+    import stat
+    import sys
+
+    root = Path(request["root"])
+    report = {"python": list(sys.version_info[:3]), "installed": root.is_dir() and not root.is_symlink(),
+              "files": {}, "manifest": None, "state_private": None, "config": None,
+              "queue": None, "queue_error": None}
+    if not report["installed"]:
+        return report
+    for name in request["files"]:
+        path = root / name
+        report["files"][name] = (hashlib.sha256(path.read_bytes()).hexdigest()
+                                 if path.is_file() and not path.is_symlink() else None)
+    state = root / ".state"
+    if state.is_dir() and not state.is_symlink():
+        info = state.stat()
+        report["state_private"] = info.st_uid == os.getuid() and not stat.S_IMODE(info.st_mode) & 0o077
+        manifest = state / "deployment.json"
+        if manifest.is_file() and not manifest.is_symlink():
+            try:
+                report["manifest"] = json.loads(manifest.read_text())
+            except ValueError:
+                pass
+        database = state / "mail.sqlite3"
+        report["queue"] = {}
+        if database.is_file() and not database.is_symlink():
+            try:
+                connection = sqlite3.connect(database.as_uri() + "?mode=ro", uri=True)
+                try:
+                    report["queue"] = dict(connection.execute(
+                        "SELECT state, count(*) FROM messages GROUP BY state").fetchall())
+                finally:
+                    connection.close()
+            except sqlite3.Error as exc:
+                report["queue"], report["queue_error"] = None, str(exc)
+    routes = root / "routes.json"
+    if routes.is_file() and not routes.is_symlink():
+        try:
+            cfg = json.loads(routes.read_text(encoding="utf-8"))
+            report["config"] = {"side": cfg.get("side"), "peers": cfg.get("peers")}
+        except (ValueError, AttributeError):
+            report["config"] = {"invalid": True}
+    return report
+
+
+def inspection_script():
+    return ("import json,sys\n" + inspect.getsource(inspect_installation)
+            + "\nprint(json.dumps(inspect_installation(json.load(sys.stdin))))\n")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--install-config", action="store_true",

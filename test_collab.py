@@ -1,7 +1,10 @@
 import base64
 import hashlib
 import json
+import os
 from pathlib import Path
+import subprocess
+import sys
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 import unittest
@@ -206,6 +209,35 @@ class CollabTests(unittest.TestCase):
         self.assertEqual(result["protocolVersion"], "2025-03-26")
         self.assertIn("tools", result["capabilities"])
         self.assertIsNone(mcp_server.handle({"method": "notifications/initialized"}))
+
+    def test_relay_status_reads_the_pid_file_without_the_lock(self):
+        self.assertEqual(collab.relay_status(self.root), {"running": False, "pid": None, "stale": False})
+        pid_file = self.root / ".state" / "relay.pid"
+        pid_file.write_text(str(os.getpid()))  # This test process is alive but is not a relay.
+        self.assertEqual(collab.relay_status(self.root), {"running": False, "pid": os.getpid(), "stale": True})
+        pid_file.write_text("not a pid")
+        self.assertEqual(collab.relay_status(self.root), {"running": False, "pid": None, "stale": True})
+        self.assertFalse((self.root / ".state" / "relay.lock").exists())
+
+    @unittest.skipUnless(Path("/proc/self/cmdline").exists(), "process arguments require /proc")
+    def test_relay_status_recognizes_a_live_relay_process(self):
+        process = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)", "collab.py", "relay"])
+        self.addCleanup(process.wait)
+        self.addCleanup(process.kill)
+        (self.root / ".state" / "relay.pid").write_text(str(process.pid))
+        self.assertEqual(collab.relay_status(self.root), {"running": True, "pid": process.pid, "stale": False})
+
+    def test_queue_summary_counts_states_read_only(self):
+        self.send()
+        self.send()
+        self.box.claim()
+        database = self.root / ".state" / "mail.sqlite3"
+        before = database.read_bytes()
+        self.assertEqual(collab.queue_summary(self.root), {"pending": 1, "sending": 1})
+        self.assertEqual(database.read_bytes(), before)
+        with TemporaryDirectory() as empty:
+            self.assertEqual(collab.queue_summary(Path(empty)), {})
+            self.assertFalse((Path(empty) / ".state").exists())
 
 
 if __name__ == "__main__":

@@ -272,6 +272,52 @@ def relay(args, root=ROOT):
             (state / "relay.pid").unlink(missing_ok=True)
 
 
+def process_is_relay(pid):
+    cmdline = Path("/proc") / str(pid) / "cmdline"
+    if Path("/proc/self").exists():
+        try:
+            argv = cmdline.read_bytes().split(b"\0")
+        except OSError:
+            return False
+        return b"relay" in argv and any(arg.endswith(b"collab.py") for arg in argv)
+    try:
+        os.kill(pid, 0)  # Without /proc, process existence is the best available signal.
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def relay_status(root=ROOT):
+    """Report this installation's relay from its pid file; never touches the relay lock."""
+    try:
+        pid = int((Path(root) / ".state" / "relay.pid").read_text())
+    except FileNotFoundError:
+        return {"running": False, "pid": None, "stale": False}
+    except (OSError, ValueError):
+        return {"running": False, "pid": None, "stale": True}
+    running = process_is_relay(pid)
+    return {"running": running, "pid": pid, "stale": not running}
+
+
+def queue_summary(root=ROOT):
+    """Count messages per state with a read-only connection; no database means an empty queue."""
+    path = Path(root) / ".state" / "mail.sqlite3"
+    if path.is_symlink():
+        raise BridgeError("The database must not be a symlink.")
+    if not path.is_file():
+        return {}
+    try:
+        db = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)
+        try:
+            return dict(db.execute("SELECT state, count(*) FROM messages GROUP BY state").fetchall())
+        finally:
+            db.close()
+    except sqlite3.Error as exc:
+        raise BridgeError(f"Could not read the mailbox: {exc}") from exc
+
+
 def create_session(args, root=ROOT):
     # Explicit administration from Linux. Do not register sessions automatically
     # or change existing sessions' agents or permissions.
