@@ -22,12 +22,17 @@ from opencode_adapter import OpenCodeAdapter, OpenCodeCli
 from transports import LocalCommandTransport
 
 
-def state_root():
+def state_path():
+    """The local bridge's state folder, without creating it."""
     base = Path(os.environ.get("OPENCODE_CONNECT_LOCAL_STATE_HOME",
                               os.environ.get("XDG_STATE_HOME", str(Path.home() / ".local/state"))))
     if not base.is_absolute():
         raise BridgeError("The local bridge state home must be absolute.")
-    return private_directory(base / "opencode-connect" / "local")
+    return base / "opencode-connect" / "local"
+
+
+def state_root():
+    return private_directory(state_path())
 
 
 def local_adapter():

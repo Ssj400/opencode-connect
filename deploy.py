@@ -51,6 +51,8 @@ FILES = (
     "docs/local-messaging.md",
     # Federated courier between people
     # Claude Code harness
+    "claude_hook.py",
+    "test_claude.py",
 )
 
 
