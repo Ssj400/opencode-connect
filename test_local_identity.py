@@ -15,7 +15,7 @@ from unittest.mock import Mock, patch
 import collab
 import config
 from core import BridgeError, relay_once
-from local_bridge import LocalMailbox, deliver_local, local_relay_once, session
+from local_bridge import LocalMailbox, deliver_local, local_adapter, local_relay_once, session
 from local_mcp_server import call_tool
 from opencode_adapter import OpenCodeAdapter
 
@@ -35,6 +35,32 @@ def mixed_config():
 
 
 class LocalNodeValidationTests(unittest.TestCase):
+    def test_factory_constructs_only_local_transport_with_explicit_cli(self):
+        with patch("local_bridge.LocalCommandTransport") as transport, \
+                patch("local_bridge.OpenCodeCli") as cli, \
+                patch("local_bridge.shutil.which", return_value="/opt/example/opencode") as which, \
+                patch("transports.WindowsWslSshTransport",
+                      side_effect=AssertionError("Local factory must not construct SSH")) as remote:
+            adapter = local_adapter()
+            which.assert_called_once_with("opencode")
+            transport.assert_called_once_with()
+            cli.assert_called_once_with(transport.return_value, "/opt/example/opencode")
+            self.assertIsInstance(adapter, OpenCodeAdapter)
+            self.assertIs(adapter.api, cli.return_value)
+            remote.assert_not_called()
+
+    def test_factory_missing_cli_path_keeps_local_transport(self):
+        with patch("local_bridge.LocalCommandTransport") as transport, \
+                patch("local_bridge.OpenCodeCli") as cli, \
+                patch("local_bridge.shutil.which", return_value=None), \
+                patch("transports.WindowsWslSshTransport",
+                      side_effect=AssertionError("Missing CLI must not trigger SSH")) as remote:
+            adapter = local_adapter()
+            transport.assert_called_once_with()
+            cli.assert_called_once_with(transport.return_value, "opencode")
+            self.assertIs(adapter.api, cli.return_value)
+            remote.assert_not_called()
+
     def test_default_environment_and_explicit_node(self):
         with patch.dict(os.environ, {}, clear=True):
             self.assertEqual(config.local_node(), "local")
