@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Opt-in, consent-gated person-to-person text courier (queue integration pending)."""
+"""Opt-in, consent-gated person-to-person text courier over a private LAN or VPN."""
 
 import argparse
 from contextlib import contextmanager
@@ -132,7 +132,7 @@ def default_config_path():
 def read_config(path):
     path = Path(path)
     try:
-        private_directory(path.parent)
+        check_private_directory(path.parent)
         info = path.lstat()
         if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
                 or stat.S_IMODE(info.st_mode) != 0o600):
@@ -140,6 +140,17 @@ def read_config(path):
         return validate_config(json.loads(path.read_text(encoding="utf-8")))
     except (OSError, ValueError, UnicodeError) as exc:
         raise BridgeError("Could not read the private courier configuration.") from exc
+
+
+def check_private_directory(path):
+    """Validate an existing directory without creating or repairing anything."""
+    path = Path(path)
+    if not path.is_absolute() or any(p.is_symlink() for p in (path, *path.parents)):
+        raise BridgeError("Courier state paths must be absolute and must not traverse symlinks.")
+    info = path.lstat()
+    if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid()
+            or stat.S_IMODE(info.st_mode) & 0o077):
+        raise BridgeError("Courier directories require current-user ownership and private permissions.")
 
 
 def write_config(path, config):
@@ -179,7 +190,7 @@ class Courier:
 
     The queue exposes db, transaction(), claim(prefix), mark(), release(),
     insert_inbound(), approve_inbound(), and cancel_person(). No queue schema is
-    accessed here. The real adapter is deliberately deferred until C0 approval.
+    accessed here. LocalMailbox supplies the operational adapter.
     """
 
     def __init__(self, queue, config, *, config_path=None, clock=time.time):
@@ -267,7 +278,7 @@ class Courier:
                 row = self.queue.get(message_id)
                 if row is not None and row["state"] in {"held", "pending"}:
                     cancellable.append(message_id)
-            self.queue.cancel_person("person:" + name)
+            self.queue.cancel_person("person:" + name, outbound=True)
             for message_id in cancellable:
                 self.db.execute("UPDATE courier_inbound SET state='rejected' WHERE id=?", (message_id,))
             for (message_id,) in self.db.execute("SELECT id FROM courier_sent WHERE contact=?", (name,)):
@@ -338,8 +349,10 @@ class Courier:
             if held >= HELD_LIMIT:
                 raise RequestError(429, "Contact held-message limit exceeded.")
             # Insertion, receipt, and deduplication commit or roll back together.
-            row = self.queue.insert_inbound(source="person:" + name, target=None, text=text,
-                                            remote_key=key)
+            row = self.queue.insert_inbound(source="person:" + name, text=text,
+                                            remote_key=key, reply_to=reply)
+            if row.get("duplicate"):
+                raise BridgeError("Queue receipt exists without courier metadata; review state manually.")
             message_id = row["id"]
             if not isinstance(message_id, str) or not MESSAGE.fullmatch(message_id):
                 raise BridgeError("Queue returned an invalid inbound message ID.")
@@ -370,7 +383,7 @@ class Courier:
         rows = self.db.execute("SELECT id FROM courier_inbound WHERE state='held' AND expires<=?",
                                (self.clock(),)).fetchall()
         for (message_id,) in rows:
-            self.queue.mark(message_id, "expired", {"reason": "Retention expired."})
+            self.queue.reject_inbound(message_id, reason="Retention expired.")
             self.db.execute("UPDATE courier_inbound SET state='expired' WHERE id=?", (message_id,))
 
     def inbox(self):
@@ -383,7 +396,7 @@ class Courier:
                 suggestion = self.db.execute(
                     "SELECT source FROM courier_sent WHERE contact=? AND remote_id=? AND state!='cancelled'",
                     (name, reply)).fetchone() if reply else None
-                result.append({"id": message_id, "person": name, "text": clean_display(row["text"]),
+                result.append({"id": message_id, "person": name, "text": clean_display(row["payload"]["text"]),
                                "created": created, "suggested_target": suggestion[0] if suggestion else None})
             return result
 
@@ -401,15 +414,15 @@ class Courier:
                 raise BridgeError("Only a held, unexpired message can be approved.")
             if row[1] not in self.settings()["tokens"]:
                 raise BridgeError("Contact is no longer authorized.")
-            self.queue.approve_inbound(message_id, target)
-            self.db.execute("UPDATE courier_inbound SET state='approved',target=? WHERE id=?", (target, message_id))
+            approved = self.queue.approve_inbound(message_id, target)
+            self.db.execute("UPDATE courier_inbound SET state='approved',target=? WHERE id=?", (approved["target"], message_id))
 
     def reject(self, message_id):
         with self.transaction():
             row = self.db.execute("SELECT state FROM courier_inbound WHERE id=?", (message_id,)).fetchone()
             if row is None or row[0] != "held":
                 raise BridgeError("Only a held message can be rejected.")
-            self.queue.mark(message_id, "rejected", {"reason": "Rejected by operator."})
+            self.queue.reject_inbound(message_id, reason="Rejected by operator.")
             self.db.execute("UPDATE courier_inbound SET state='rejected' WHERE id=?", (message_id,))
 
     def send_once(self):
@@ -443,9 +456,9 @@ class Courier:
                 self.db.execute("""INSERT OR IGNORE INTO courier_sent(id,contact,source,state)
                                    VALUES(?,?,?,'sending')""", (job["id"], name, job["source"]))
                 self.db.execute("UPDATE courier_sent SET state='sending' WHERE id=?", (job["id"],))
-            payload = {"text": job["text"], "idempotency_key": job["id"]}
-            if job.get("reply_to") is not None:
-                payload["reply_to"] = job["reply_to"]
+            payload = {"text": job["payload"]["text"], "idempotency_key": job["id"]}
+            if job["payload"].get("reply_to") is not None:
+                payload["reply_to"] = job["payload"]["reply_to"]
             try:
                 result = http_json(card["url"] + "/v1/messages", method="POST", data=payload,
                                    headers={"Authorization": "Bearer " + card["token"]}, timeout=SOCKET_TIMEOUT)
@@ -490,7 +503,10 @@ class Courier:
 
     def poll_once(self):
         with self.lock:
-            rows = self.db.execute("SELECT id,contact,remote_id FROM courier_sent WHERE state='held' AND next_attempt<=?",
+            # At most one bounded network probe per event-loop tick, so a large
+            # backlog or offline peer cannot starve the inbound HTTP listener.
+            rows = self.db.execute("SELECT id,contact,remote_id FROM courier_sent WHERE state='held' AND next_attempt<=? "
+                                   "ORDER BY next_attempt,id LIMIT 1",
                                    (self.clock(),)).fetchall()
             for message_id, name, remote_id in rows:
                 card = self.settings()["contacts"].get(name)
@@ -602,7 +618,100 @@ class CourierHandler(BaseHTTPRequestHandler):
 
 
 def real_queue(config_path):
-    raise BridgeError("Real queue integration awaits C0.8/C0.9 approval (B5); no courier was started.")
+    from local_bridge import LocalMailbox, state_root
+    return LocalMailbox(state_root())
+
+
+def local_queue_root():
+    """Read-only counterpart of local_bridge.state_root; never creates its path."""
+    base = Path(os.environ.get("OPENCODE_CONNECT_LOCAL_STATE_HOME",
+                               os.environ.get("XDG_STATE_HOME", str(Path.home() / ".local/state"))))
+    if not base.is_absolute():
+        raise BridgeError("The local bridge state home must be absolute.")
+    return base / "opencode-connect/local"
+
+
+def doctor(config_path, *, root=None, network=True, clock=time.time):
+    """Read configuration/state and bounded identity probes; never send or approve text."""
+    findings = []
+    try:
+        config = read_config(config_path)
+    except (BridgeError, OSError):
+        return [{"status": "FAIL", "area": "Configuration", "detail": "Missing or insecure private configuration."}]
+    findings.append({"status": "OK", "area": "Configuration", "detail": "Owned private directory and 0600 file."})
+    root = local_queue_root() if root is None else Path(root)
+    database = root / ".state/mail.sqlite3"
+    if not database.exists() and not database.is_symlink():
+        findings.append({"status": "WARN", "area": "State", "detail": "Courier queue has not been initialized."})
+    else:
+        try:
+            check_private_directory(database.parent)
+            info = database.lstat()
+            if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                    or stat.S_IMODE(info.st_mode) != 0o600):
+                raise BridgeError("Insecure courier database.")
+            for suffix in ("-wal", "-shm", "-journal"):
+                sidecar = database.with_name(database.name + suffix)
+                if sidecar.exists() or sidecar.is_symlink():
+                    info = sidecar.lstat()
+                    if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                            or stat.S_IMODE(info.st_mode) != 0o600):
+                        raise BridgeError("Insecure courier database sidecar.")
+            db = sqlite3.connect(database.as_uri() + "?mode=ro", uri=True, timeout=SOCKET_TIMEOUT)
+            try:
+                db.execute("BEGIN")
+                saved = db.execute("SELECT data FROM courier_settings WHERE id=1").fetchone()
+                if saved is None:
+                    raise BridgeError("Missing courier configuration snapshot.")
+                saved = validate_config(json.loads(saved[0]))
+                if any(saved[key] != config[key] for key in ("person", "listen", "url")):
+                    raise BridgeError("Courier identity differs from stored state.")
+                if saved != config:
+                    findings.append({"status": "WARN", "area": "Snapshot", "detail": "JSON snapshot is stale; SQLite remains authoritative."})
+                config = saved
+                held = db.execute("SELECT count(*) FROM courier_inbound WHERE state='held'").fetchone()[0]
+                expired = db.execute("SELECT count(*) FROM courier_inbound WHERE state='held' AND expires<=?", (clock(),)).fetchone()[0]
+                sending = db.execute("SELECT count(*) FROM courier_sent WHERE state='sending'").fetchone()[0]
+                retry_due = db.execute("SELECT count(*) FROM courier_sent WHERE state='retry' AND next_attempt<=?", (clock(),)).fetchone()[0]
+                findings.append({"status": "WARN" if sending or retry_due or expired else "OK",
+                                 "area": "Courier state", "held": held, "expiry_due": expired,
+                                 "sending_review": sending, "retry_due": retry_due})
+            finally:
+                db.close()
+            from collab import queue_summary
+            counts = queue_summary(root)
+            findings.append({"status": "WARN" if any(counts.get(k) for k in ("pending", "sending", "uncertain", "failed")) else "OK",
+                             "area": "Local queue", "counts": counts,
+                             "detail": "All namespaces; pending may require approval consumers or a local relay."})
+        except (BridgeError, OSError, ValueError, sqlite3.Error):
+            findings.append({"status": "FAIL", "area": "State", "detail": "Insecure, unreadable, or incompatible courier state; no repair attempted."})
+            # Do not probe contacts from a possibly stale JSON snapshot if SQLite
+            # could not establish the authoritative current permissions.
+            return findings
+    if not network:
+        findings.append({"status": "WARN", "area": "Network", "detail": "Network probes explicitly skipped."})
+        return findings
+    host, port = listen_address(config["listen"], allow_wildcard=True)
+    if ipaddress.ip_address(host).is_unspecified or port == 0:
+        findings.append({"status": "WARN", "area": "Listener", "detail": "A specific, nonzero listen endpoint is needed for a reachability probe."})
+    else:
+        try:
+            with socket.create_connection((host, port), timeout=SOCKET_TIMEOUT):
+                pass
+            findings.append({"status": "OK", "area": "Listener", "detail": "TCP reachable; this alone does not establish process identity."})
+        except OSError:
+            findings.append({"status": "FAIL", "area": "Listener", "detail": "Configured TCP listener is not reachable."})
+    for name, card in sorted(config["contacts"].items()):
+        try:
+            identity = http_json(card["url"] + "/v1/whoami", headers={"Authorization": "Bearer " + card["token"]},
+                                 timeout=SOCKET_TIMEOUT)
+            matches = (isinstance(identity, dict) and identity.get("person") == name
+                       and type(identity.get("protocol")) is int and identity["protocol"] == 1)
+            detail = "Authenticated courier identity matches." if matches else "Courier identity does not match the contact card."
+        except BridgeError:
+            matches, detail = False, "Contact unreachable, token rejected, or invalid identity response."
+        findings.append({"status": "OK" if matches else "FAIL", "area": "Contact", "person": name, "detail": detail})
+    return findings
 
 
 def main(argv=None, *, queue_factory=real_queue):
@@ -615,6 +724,8 @@ def main(argv=None, *, queue_factory=real_queue):
     init.add_argument("--url", required=True, help="Reachable HTTP(S) origin included in invitation cards")
     run = sub.add_parser("run", help="Serve inbound messages and process outbound person messages")
     run.add_argument("--allow-wildcard", action="store_true")
+    diagnostic = sub.add_parser("doctor", help="Read-only state checks and bounded authenticated identity probes")
+    diagnostic.add_argument("--offline", action="store_true", help="Skip all network probes")
     invite = sub.add_parser("invite", help="Issue a token and display its card once")
     invite.add_argument("person")
     trust = sub.add_parser("trust", help="Accept an independently received contact card")
@@ -632,6 +743,10 @@ def main(argv=None, *, queue_factory=real_queue):
     reject.add_argument("id")
     args = parser.parse_args(argv)
     try:
+        if args.command == "doctor":
+            findings = doctor(args.config, network=not args.offline)
+            print(json.dumps(findings, ensure_ascii=False))
+            return 1 if any(row["status"] == "FAIL" for row in findings) else 0
         if args.command in {"init", "invite", "trust", "untrust", "approve", "reject"}:
             detail = args.command
             if args.command == "approve":
@@ -646,7 +761,7 @@ def main(argv=None, *, queue_factory=real_queue):
                 raise BridgeError("Courier configuration already exists; it was not overwritten.")
             config = {"person": args.person, "listen": args.listen, "url": args.url, "tokens": {}, "contacts": {}}
             write_config(args.config, config)
-            print("Private courier configuration created; real queue integration is pending.")
+            print("Private courier configuration created; no listener was started.")
             return 0
         config = read_config(args.config)
         queue = queue_factory(args.config)
@@ -699,6 +814,8 @@ def main(argv=None, *, queue_factory=real_queue):
 
 
 def run_courier(courier, listen, *, allow_wildcard=False):
+    if listen_address(listen, allow_wildcard)[1] == 0:
+        raise BridgeError("The operational listener requires a fixed nonzero port.")
     # One coordinator per queue; no recovery of unrelated sending/uncertain rows.
     with courier.lock:
         database = courier.db.execute("PRAGMA database_list").fetchone()[2]

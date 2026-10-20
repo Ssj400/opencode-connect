@@ -17,6 +17,8 @@ from unittest.mock import Mock, patch
 import uuid
 
 import courier
+import local_bridge
+import local_mcp_server
 from core import BridgeError
 from transports import HttpError, http_json
 
@@ -45,13 +47,13 @@ class FakeQueue:
             self.db.rollback()
             raise
 
-    def insert_inbound(self, *, source, target, text, remote_key):
+    def insert_inbound(self, source, text, *, remote_key, reply_to=None):
         assert self.db.in_transaction
-        assert source.startswith("person:") and target is None
+        assert source.startswith("person:")
         message_id = "msg_" + uuid.uuid4().hex
-        self.db.execute("INSERT INTO fake_messages VALUES(?,?,?,?, 'held', NULL,?,NULL)",
-                        (message_id, source, target, text, remote_key))
-        return self.get(message_id)
+        self.db.execute("INSERT INTO fake_messages VALUES(?,?,NULL,?, 'held', NULL,?,?)",
+                        (message_id, source, text, remote_key, reply_to))
+        return {"id": message_id, "state": "held", "duplicate": False}
 
     def enqueue(self, source, target, text, reply_to=None):
         message_id = "msg_" + uuid.uuid4().hex
@@ -62,7 +64,11 @@ class FakeQueue:
     def get(self, message_id):
         columns = ("id", "source", "target", "text", "state", "result", "remote_key", "reply_to")
         row = self.db.execute("SELECT * FROM fake_messages WHERE id=?", (message_id,)).fetchone()
-        return dict(zip(columns, row)) if row else None
+        if row is None:
+            return None
+        result = dict(zip(columns, row))
+        result["payload"] = {"text": result.pop("text"), "reply_to": result.pop("reply_to")}
+        return result
 
     def claim(self, match):
         assert self.db.in_transaction and match == "person:"
@@ -76,6 +82,8 @@ class FakeQueue:
 
     def mark(self, message_id, state, result):
         assert self.db.in_transaction
+        assert self.get(message_id)["state"] == "sending"
+        assert state in {"delivered", "uncertain", "failed", "cancelled"}
         self.db.execute("UPDATE fake_messages SET state=?,result=? WHERE id=?",
                         (state, json.dumps(result), message_id))
 
@@ -89,11 +97,20 @@ class FakeQueue:
         assert self.db.in_transaction
         self.db.execute("UPDATE fake_messages SET target=?,state='pending' WHERE id=? AND state='held' AND substr(source,1,7)='person:'",
                         (target, message_id))
+        return {"id": message_id, "state": "pending", "target": target}
 
-    def cancel_person(self, source):
+    def reject_inbound(self, message_id, reason=None):
+        assert self.db.in_transaction
+        assert self.get(message_id)["state"] == "held"
+        self.db.execute("UPDATE fake_messages SET state='rejected',result=? WHERE id=?",
+                        (json.dumps({"reason": reason}), message_id))
+        return {"id": message_id, "state": "rejected"}
+
+    def cancel_person(self, source, *, outbound=False):
         assert self.db.in_transaction and source.startswith("person:")
-        self.db.execute("""UPDATE fake_messages SET state='cancelled' WHERE
-                           (source=? OR target=?) AND state IN ('held','pending')""", (source, source))
+        self.db.execute("UPDATE fake_messages SET state='cancelled' WHERE source=? AND state IN ('held','pending')", (source,))
+        if outbound:
+            self.db.execute("UPDATE fake_messages SET state='cancelled' WHERE target=? AND state='pending'", (source,))
 
 
 def configuration(name="alice"):
@@ -217,7 +234,7 @@ class CourierTests(unittest.TestCase):
         self.now += courier.RETENTION + 1
         self.assertEqual(self.bob.inbox(), [])
         self.assertEqual(self.bob.queue.get(first["id"])["state"], "rejected")
-        self.assertEqual(self.bob.queue.get(second["id"])["state"], "expired")
+        self.assertEqual(self.bob.queue.get(second["id"])["state"], "rejected")
         self.assertEqual(self.receive(key="expire")["state"], "expired")
         with self.assertRaises(BridgeError):
             self.bob.approve(second["id"], "wsl:ses_example")
@@ -297,7 +314,7 @@ class CourierTests(unittest.TestCase):
         message_id = self.alice.queue.enqueue("wsl:ses_example", "person:bob", "hello")
         local = self.alice.queue.enqueue("person:bob", "wsl:ses_example", "unrelated local delivery")
         with self.alice.transaction():
-            self.alice.queue.mark(local, "sending", {})
+            self.alice.db.execute("UPDATE fake_messages SET state='sending' WHERE id=?", (local,))
         def accepted_then_crashed(*args, **kwargs):
             http_json(*args, **kwargs)
             raise RuntimeError("Simulated process crash.")
@@ -332,6 +349,7 @@ class CourierTests(unittest.TestCase):
         receipt = self.receive()
         self.bob.approve(receipt["id"], "wsl:ses_example")
         with self.bob.transaction():
+            self.bob.db.execute("UPDATE fake_messages SET state='sending' WHERE id=?", (receipt["id"],))
             self.bob.queue.mark(receipt["id"], "delivered", {"accepted": True})
         self.bob.untrust("alice")
         self.assertEqual(self.bob.queue.get(receipt["id"])["state"], "delivered")
@@ -353,6 +371,19 @@ class CourierTests(unittest.TestCase):
         self.alice.receive("Bearer " + stranger["token"], {"text": "forged", "idempotency_key": "foreign", "reply_to": remote_id})
         foreign = next(row for row in self.alice.inbox() if row["person"] == "carol")
         self.assertIsNone(foreign["suggested_target"])
+
+    def test_poll_backlog_is_bounded_to_one_probe_per_tick(self):
+        for source in ("wsl:ses_first", "wsl:ses_second"):
+            self.alice.queue.enqueue(source, "person:bob", "hello")
+            self.alice.send_once()
+        self.now += 61
+        with patch("courier.http_json", side_effect=BridgeError("Peer unavailable.")) as http:
+            self.alice.poll_once()
+            http.assert_called_once()
+            self.alice.poll_once()
+            self.assertEqual(http.call_count, 2)
+            self.alice.poll_once()
+            self.assertEqual(http.call_count, 2)
 
     def test_contact_rate_and_held_limits(self):
         with patch("courier.RATE", 2):
@@ -380,7 +411,7 @@ class CourierTests(unittest.TestCase):
         self.receive(text="hola\x1b[31mred\x1b[0m\x1b]0;bad title\x07\n\r\x00\x7f\u202e\u009bworld")
         row = self.bob.inbox()[0]
         self.assertEqual(row["text"], "holaredworld")
-        self.assertIn("\x1b", self.bob.queue.get(row["id"])["text"])
+        self.assertIn("\x1b", self.bob.queue.get(row["id"])["payload"]["text"])
 
     def test_http_authenticates_before_body_read(self):
         # No body is sent despite the advertised length; a 401 must arrive now,
@@ -531,14 +562,20 @@ class CourierConfigurationTests(unittest.TestCase):
                 self.assertEqual(courier.main(arguments, queue_factory=Mock()), 1)
                 read.assert_not_called()
 
-    def test_cli_real_run_fails_closed_until_queue_integration(self):
+    def test_real_queue_factory_uses_local_mailbox_and_unchanged_environment(self):
         with tempfile.TemporaryDirectory(prefix="courier-cli-") as folder:
             path = Path(folder) / "courier.json"
-            courier.write_config(path, configuration())
-            with patch("courier.CourierServer") as server, patch("sys.stderr", new_callable=io.StringIO) as error:
-                self.assertEqual(courier.main(["--config", str(path), "run"]), 1)
-                self.assertIn("C0.8/C0.9", error.getvalue())
-                server.assert_not_called()
+            import os
+            from local_bridge import LocalMailbox
+            with patch.dict(os.environ, {"OPENCODE_CONNECT_LOCAL_NODE": "wsl",
+                                         "OPENCODE_CONNECT_LOCAL_STATE_HOME": folder}):
+                queue = courier.real_queue(path)
+                try:
+                    self.assertIsInstance(queue, LocalMailbox)
+                    self.assertEqual(queue.node, "wsl")
+                    self.assertEqual(queue.state.parent, Path(folder) / "opencode-connect/local")
+                finally:
+                    queue.db.close()
 
     def test_injected_cli_invite_trust_inbox_and_approval(self):
         with tempfile.TemporaryDirectory(prefix="courier-cli-contract-") as folder:
@@ -583,6 +620,306 @@ class CourierConfigurationTests(unittest.TestCase):
                                 capture_output=True, text=True, timeout=5)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("consent-gated", result.stdout)
+
+
+class RealQueueCourierTests(unittest.TestCase):
+    """Real v2 mailboxes, independent connections, and mocked harness/HTTP effects."""
+
+    def setUp(self):
+        self.folder = tempfile.TemporaryDirectory(prefix="courier-real-")
+        self.addCleanup(self.folder.cleanup)
+        self.root = Path(self.folder.name)
+        self.now = 1000.0
+        self.a_root, self.b_root = self.root / "alice", self.root / "bob"
+        self.a_box = local_bridge.LocalMailbox(self.a_root, node="wsl")
+        self.b_box = local_bridge.LocalMailbox(self.b_root, node="linux")
+        self.addCleanup(self.a_box.db.close)
+        self.addCleanup(self.b_box.db.close)
+        self.alice = courier.Courier(self.a_box, configuration("alice"), clock=lambda: self.now)
+        self.bob = courier.Courier(self.b_box, configuration("bob"), clock=lambda: self.now)
+        self.a_card = self.alice.invite("bob")
+        self.b_card = self.bob.invite("alice")
+        self.alice.trust("bob", self.b_card)
+        self.bob.trust("alice", self.a_card)
+
+    def receive(self, key="example"):
+        return self.bob.receive("Bearer " + self.b_card["token"], {"text": "hello", "idempotency_key": key})
+
+    def relay_mock(self, box):
+        adapter = Mock(supported_deliveries=frozenset({"queue"}))
+        adapter.api.call.side_effect = lambda method, path: (
+            {"version": "2.0.0"} if path == "/api/info" else {"data": {"id": "ses_example", "time": {}}})
+        adapter.send_message.return_value = "accepted_example"
+        outcome = local_bridge.local_relay_once(box, adapter)
+        return outcome, adapter
+
+    def test_mcp_courier_human_approval_local_relay_and_correlated_reply(self):
+        outgoing = local_mcp_server.call_tool({"name": "send", "arguments": {
+            "to": "person:bob", "text": "hello"}, "_meta": {"ai.opencode/sessionID": "ses_example"}},
+            root=self.a_root, node="wsl")
+        def receive_at_bob(url, **kwargs):
+            return self.bob.receive(kwargs["headers"]["Authorization"], kwargs["data"])
+        with patch("courier.http_json", side_effect=receive_at_bob):
+            self.alice.send_once()
+        receipt = json.loads(self.a_box.get(outgoing["id"])["result"])
+        self.assertEqual(receipt["state"], "held")
+        self.assertIsNone(self.b_box.claim())
+        self.assertEqual(self.b_box.get(receipt["remote_id"])["state"], "held")
+        self.bob.approve(receipt["remote_id"], "linux:ses_example")
+        outcome, adapter = self.relay_mock(self.b_box)
+        self.assertEqual(outcome["state"], "delivered")
+        envelope = adapter.send_message.call_args.kwargs["text"]
+        self.assertIn("Reply address: person:alice", envelope)
+        self.assertIn("> hello", envelope)
+        reply = local_mcp_server.call_tool({"name": "send", "arguments": {
+            "to": "person:alice", "text": "received", "reply_to": receipt["remote_id"]},
+            "_meta": {"ai.opencode/sessionID": "ses_example"}}, root=self.b_root, node="linux")
+        def receive_at_alice(url, **kwargs):
+            return self.alice.receive(kwargs["headers"]["Authorization"], kwargs["data"])
+        with patch("courier.http_json", side_effect=receive_at_alice):
+            self.bob.send_once()
+        inbound = self.alice.inbox()[0]
+        self.assertEqual(inbound["suggested_target"], "wsl:ses_example")
+        self.assertEqual(self.a_box.get(inbound["id"])["state"], "held")
+        self.alice.approve(inbound["id"], "wsl:ses_example")
+        self.assertEqual(self.relay_mock(self.a_box)[0]["state"], "delivered")
+        self.assertEqual(self.b_box.get(reply["id"])["state"], "delivered")
+        self.assertFalse(self.a_box.db.in_transaction)
+        self.assertFalse(self.b_box.db.in_transaction)
+
+    def test_expiry_and_rejection_use_real_held_transitions(self):
+        expired, rejected = self.receive("expires"), self.receive("rejects")
+        self.bob.reject(rejected["id"])
+        self.now += courier.RETENTION + 1
+        self.assertEqual(self.bob.inbox(), [])
+        self.assertEqual(self.b_box.get(expired["id"])["state"], "rejected")
+        self.assertEqual(json.loads(self.b_box.get(expired["id"])["result"])["reason"], "Retention expired.")
+        self.assertEqual(self.bob.remote_status("Bearer " + self.b_card["token"], expired["id"])["state"], "expired")
+
+    def test_real_queue_crash_recovery_is_idempotent(self):
+        job = self.a_box.enqueue("wsl:ses_example", "person:bob", "hello")
+        def receive_then_crash(url, **kwargs):
+            self.bob.receive(kwargs["headers"]["Authorization"], kwargs["data"])
+            raise RuntimeError("Simulated crash after remote acceptance.")
+        with patch("courier.http_json", side_effect=receive_then_crash), self.assertRaises(RuntimeError):
+            self.alice.send_once()
+        self.assertEqual(self.a_box.get(job["id"])["state"], "sending")
+        # Reopen the worker connection to exercise persistent metadata, not memory.
+        recovered_box = local_bridge.LocalMailbox(self.a_root, node="wsl")
+        self.addCleanup(recovered_box.db.close)
+        recovered = courier.Courier(recovered_box, configuration("alice"), clock=lambda: self.now)
+        recovered.recover_outbound()
+        with patch("courier.http_json", side_effect=lambda url, **kw: self.bob.receive(
+                kw["headers"]["Authorization"], kw["data"])):
+            recovered.send_once()
+        self.assertEqual(self.a_box.get(job["id"])["state"], "delivered")
+        self.assertEqual(len(self.bob.inbox()), 1)
+
+    def test_foreign_contract_fails_before_courier_writes(self):
+        other = local_bridge.LocalMailbox(self.b_root, node="other")
+        self.addCleanup(other.db.close)
+        before = self.b_box.db.execute("SELECT data FROM courier_settings").fetchall()[0][0]
+        with self.assertRaisesRegex(BridgeError, "configuration mismatch"):
+            courier.Courier(other, configuration("bob"))
+        self.assertEqual(self.b_box.db.execute("SELECT data FROM courier_settings").fetchall()[0][0], before)
+        self.assertFalse(other.db.in_transaction)
+
+    def test_cli_approval_and_worker_use_independent_connections(self):
+        receipt = self.receive()
+        config_path = self.root / "courier.json"
+        courier.write_config(config_path, self.bob.settings())
+        ready, approved = threading.Event(), threading.Event()
+        results, failures = [], []
+        def worker():
+            box = local_bridge.LocalMailbox(self.b_root, node="linux")
+            try:
+                self.assertIsNone(box.claim())
+                ready.set()
+                self.assertTrue(approved.wait(3))
+                job = box.claim()
+                results.append(job["id"])
+                box.mark(job["id"], "delivered", {"inbox_id": "accepted_example"})
+            except BaseException as exc:
+                failures.append(exc)
+                ready.set()
+            finally:
+                box.db.close()
+        thread = threading.Thread(target=worker)
+        thread.start()
+        try:
+            self.assertTrue(ready.wait(3))
+            real_courier = courier.Courier
+            with patch("courier.interactive_confirmation"), patch("sys.stdout", new_callable=io.StringIO), \
+                    patch("courier.Courier", side_effect=lambda queue, config, **kw:
+                          real_courier(queue, config, clock=lambda: self.now, **kw)):
+                result = courier.main(["--config", str(config_path), "approve", receipt["id"],
+                                       "--to", "linux:ses_example"],
+                                      queue_factory=lambda path: local_bridge.LocalMailbox(self.b_root, node="linux"))
+            self.assertEqual(result, 0)
+        finally:
+            approved.set()
+            thread.join(5)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(failures, [])
+        self.assertEqual(results, [receipt["id"]])
+        self.assertEqual(self.b_box.get(receipt["id"])["state"], "delivered")
+
+    def test_revocation_racing_upload_is_atomic_across_connections(self):
+        ready = threading.Barrier(3)
+        inserted, revoking, proceed = threading.Event(), threading.Event(), threading.Event()
+        receipts, failures = [], []
+        def upload():
+            box = local_bridge.LocalMailbox(self.b_root, node="linux")
+            try:
+                app = courier.Courier(box, configuration("bob"))
+                insert = box.insert_inbound
+                def pause(*args, **kwargs):
+                    inserted.set()
+                    self.assertTrue(proceed.wait(3))
+                    return insert(*args, **kwargs)
+                ready.wait(3)
+                with patch.object(box, "insert_inbound", side_effect=pause):
+                    receipts.append(app.receive("Bearer " + self.b_card["token"], {
+                        "text": "racing", "idempotency_key": "race"}))
+            except BaseException as exc:
+                failures.append(exc)
+            finally:
+                box.db.close()
+        def revoke():
+            box = local_bridge.LocalMailbox(self.b_root, node="linux")
+            try:
+                app = courier.Courier(box, configuration("bob"))
+                ready.wait(3)
+                self.assertTrue(inserted.wait(3))
+                revoking.set()
+                app.untrust("alice")
+            except BaseException as exc:
+                failures.append(exc)
+            finally:
+                box.db.close()
+        threads = [threading.Thread(target=upload), threading.Thread(target=revoke)]
+        for thread in threads:
+            thread.start()
+        try:
+            ready.wait(3)
+            self.assertTrue(inserted.wait(3))
+            self.assertTrue(revoking.wait(3))
+        finally:
+            proceed.set()
+            for thread in threads:
+                thread.join(5)
+        self.assertTrue(all(not thread.is_alive() for thread in threads))
+        self.assertEqual(failures, [])
+        self.assertEqual(len(receipts), 1)
+        self.assertEqual(self.b_box.get(receipts[0]["id"])["state"], "cancelled")
+        self.assertEqual(self.bob.inbox(), [])
+        with self.assertRaises(courier.RequestError) as denied:
+            self.receive("after-revocation")
+        self.assertEqual(denied.exception.status, 401)
+
+
+class CourierDoctorTests(unittest.TestCase):
+    def setUp(self):
+        self.folder = tempfile.TemporaryDirectory(prefix="courier-doctor-")
+        self.addCleanup(self.folder.cleanup)
+        self.root = Path(self.folder.name)
+        self.path = self.root / "courier.json"
+        self.queue_root = self.root / "queue"
+        self.config = {**configuration(), "listen": "127.0.0.1:8765"}
+        courier.write_config(self.path, self.config)
+        self.box = local_bridge.LocalMailbox(self.queue_root, node="wsl")
+        self.addCleanup(self.box.db.close)
+        (self.box.state / "mail.sqlite3").chmod(0o600)
+        self.app = courier.Courier(self.box, self.config, config_path=self.path, clock=lambda: 1000)
+
+    def snapshot(self):
+        return {str(path.relative_to(self.root)): (path.read_bytes(), path.stat().st_mtime_ns)
+                for path in self.root.rglob("*") if path.is_file()}
+
+    def test_offline_doctor_is_readonly_and_never_opens_a_worker_or_socket(self):
+        before = self.snapshot()
+        with patch("courier.real_queue") as factory, patch("courier.CourierServer") as server, \
+                patch("courier.http_json") as http, patch("courier.socket.create_connection") as tcp:
+            result = courier.doctor(self.path, root=self.queue_root, network=False)
+        self.assertFalse(any(row["status"] == "FAIL" for row in result))
+        for effect in (factory, server, http, tcp):
+            effect.assert_not_called()
+        self.assertEqual(self.snapshot(), before)
+
+    def test_missing_config_and_queue_do_not_create_directories(self):
+        missing = self.root / "not-created/courier.json"
+        result = courier.doctor(missing, root=self.root / "new-queue", network=False)
+        self.assertEqual(result[0]["status"], "FAIL")
+        self.assertFalse(missing.parent.exists())
+        with patch("courier.local_queue_root", return_value=self.root / "new-queue"), \
+                patch("sys.stdout", new_callable=io.StringIO), patch("courier.real_queue") as factory:
+            self.assertEqual(courier.main(["--config", str(self.path), "doctor", "--offline"]), 0)
+        self.assertFalse((self.root / "new-queue").exists())
+        factory.assert_not_called()
+
+    def test_doctor_reports_held_expiry_due_and_retry_without_changing_rows(self):
+        card = self.app.invite("bob")
+        self.app.trust("bob", {**card, "person": "bob"})
+        inbound = self.app.receive("Bearer " + card["token"], {"text": "held", "idempotency_key": "expiry"})
+        outgoing = self.box.enqueue("wsl:ses_example", "person:bob", "outgoing")
+        with patch("courier.http_json", side_effect=BridgeError("Offline.")):
+            self.app.send_once()
+        before = self.snapshot()
+        result = courier.doctor(self.path, root=self.queue_root, network=False, clock=lambda: 1000 + courier.RETENTION + 1)
+        summary = next(row for row in result if row["area"] == "Courier state")
+        self.assertEqual((summary["held"], summary["expiry_due"], summary["retry_due"]), (1, 1, 1))
+        self.assertEqual(self.box.get(inbound["id"])["state"], "held")
+        self.assertEqual(self.box.get(outgoing["id"])["state"], "pending")
+        self.assertEqual(self.snapshot(), before)
+
+    def test_doctor_checks_listener_and_contact_identity_without_echoing_credentials(self):
+        token = "X" * 43
+        self.app.trust("bob", {"person": "bob", "url": "http://192.0.2.20:8765", "token": token})
+        with patch("courier.socket.create_connection") as tcp, patch("courier.http_json", return_value={
+                "person": "bob", "protocol": 1}) as http:
+            result = courier.doctor(self.path, root=self.queue_root)
+        self.assertTrue(all(row["status"] == "OK" for row in result))
+        tcp.assert_called_once_with(("127.0.0.1", 8765), timeout=courier.SOCKET_TIMEOUT)
+        self.assertEqual(http.call_args.kwargs["headers"], {"Authorization": "Bearer " + token})
+        self.assertNotIn(token, json.dumps(result))
+        self.assertNotIn("192.0.2.20", json.dumps(result))
+
+    def test_doctor_distinguishes_bad_contact_and_inactive_listener(self):
+        self.app.trust("bob", {"person": "bob", "url": "http://192.0.2.20:8765", "token": "X" * 43})
+        for response in ({"person": "carol", "protocol": 1}, BridgeError("Private remote error.")):
+            with self.subTest(response_type=type(response).__name__), \
+                    patch("courier.socket.create_connection", side_effect=ConnectionRefusedError), \
+                    patch("courier.http_json", **({"side_effect": response} if isinstance(response, Exception)
+                                                 else {"return_value": response})):
+                result = courier.doctor(self.path, root=self.queue_root)
+            self.assertEqual(next(row for row in result if row["area"] == "Listener")["status"], "FAIL")
+            self.assertEqual(next(row for row in result if row["area"] == "Contact")["status"], "FAIL")
+            self.assertNotIn("Private remote error", json.dumps(result))
+
+    def test_insecure_state_stops_network_probes(self):
+        (self.box.state / "mail.sqlite3").chmod(0o644)
+        with patch("courier.socket.create_connection") as tcp, patch("courier.http_json") as http:
+            result = courier.doctor(self.path, root=self.queue_root)
+        self.assertEqual(result[-1]["status"], "FAIL")
+        tcp.assert_not_called()
+        http.assert_not_called()
+
+    def test_stale_json_does_not_probe_revoked_contact(self):
+        self.app.trust("bob", {"person": "bob", "url": "http://192.0.2.20:8765", "token": "X" * 43})
+        with patch.object(self.app, "sync_config"):
+            self.app.untrust("bob")
+        before = self.snapshot()
+        with patch("courier.socket.create_connection"), patch("courier.http_json") as http:
+            result = courier.doctor(self.path, root=self.queue_root)
+        self.assertTrue(any(row["area"] == "Snapshot" for row in result))
+        http.assert_not_called()
+        self.assertEqual(self.snapshot(), before)
+
+    def test_readonly_state_path_matches_the_real_factory(self):
+        import os
+        with patch.dict(os.environ, {"OPENCODE_CONNECT_LOCAL_STATE_HOME": str(self.root)}):
+            self.assertEqual(courier.local_queue_root(), self.root / "opencode-connect/local")
+            self.assertFalse(courier.local_queue_root().exists())
 
 
 if __name__ == "__main__":

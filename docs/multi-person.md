@@ -1,4 +1,4 @@
-# Federated person-to-person messaging (B1–B4 preview)
+# Federated person-to-person messaging
 
 This opt-in courier exchanges **text only** between independently owned machines.
 There is no central mailbox, shared SSH shell, remote execution endpoint, or
@@ -8,11 +8,13 @@ a courier is not receipt by an assistant, and approval is not task completion.
 
 ## Implementation status
 
-B1–B4 are implemented against an injected SQLite `FakeQueue` and tested with two
-short-lived couriers on loopback. **The operational queue adapter and MCP person
-targets are not integrated yet (B5).** `courier.py run` fails closed before binding
-a socket without that adapter. Doctor (B6), real LAN/VPN acceptance (B7), and
-autostart are not included. No personal installation is changed by this preview.
+B1–B6 are implemented: the HTTP courier, contacts and approval, the real local
+queue v2 adapter and MCP person targets, and read-only diagnostics. Offline tests
+cover both an injected `FakeQueue` and real `LocalMailbox` instances, including
+independent CLI/worker connections, crash recovery, and racing revocation.
+Real LAN/VPN acceptance (B7) requires a separately authorized operator-assisted
+test. Autostart is not installed. Source publication does not activate a listener
+or modify a personal installation.
 
 Run offline tests with Python 3.12 or newer:
 
@@ -56,8 +58,8 @@ The default configuration is
 regular (not a symlink), and mode **0600**, in a private directory. It is separate
 from `routes.json` and does not alter local or cross-machine bridge configuration.
 
-The following are **setup examples for after B5**, not instructions to activate a
-preview listener. Substitute your authorized VPN interface IP and reachable URL:
+The following are setup examples, not permission to activate a listener.
+Substitute your authorized VPN interface IP and reachable URL:
 
 ```sh
 python3 -B courier.py init --person alice --listen 192.0.2.10:8765 --url http://192.0.2.10:8765
@@ -65,6 +67,31 @@ python3 -B courier.py invite bob
 python3 -B courier.py trust bob --card -
 python3 -B courier.py contacts
 ```
+
+The courier, local MCP, and local delivery worker must use the **same**
+`OPENCODE_CONNECT_LOCAL_NODE` and `OPENCODE_CONNECT_LOCAL_STATE_HOME`. The latter
+isolates the queue without changing OpenCode service discovery: do not change
+`XDG_STATE_HOME` merely to isolate the courier. Use `--config /private/path/courier.json`
+for a test identity instead of changing `XDG_CONFIG_HOME`, which OpenCode also uses.
+Only one person identity may own a queue.
+Do not reuse an operational queue for an acceptance test.
+
+For an existing v1 queue, stop/reload only the affected local MCP/worker processes,
+review their state, and explicitly migrate as documented in
+[local messaging](local-messaging.md). There is no silent migration. A new isolated
+queue binds to v2 without touching existing state. Start consumers explicitly:
+
+```sh
+python3 -B courier.py run
+python3 -B local_bridge.py relay
+```
+
+These are separate foreground processes in separate terminals, sharing the above
+environment. The courier handles `person:` uploads and inbound retention; the
+local relay handles approved messages for this node's OpenCode sessions. Starting
+the relay can consume model quota when approved messages are delivered. A
+`claude:UUID` destination requires its separate authorized Claude consumer; an
+approval alone does not establish that it is running.
 
 `--card -` pastes the independently obtained JSON card through a hidden terminal
 prompt. Avoid an inline `--card '{...}'`: command arguments can be visible to other
@@ -101,7 +128,8 @@ stdin **and** stdout and retyping a newly displayed five-letter code. There is n
 `--yes` bypass. Approval always requires an explicit `--to` session address, even
 if the inbox suggests one. Supported shapes are `NODE:ses_ID` and `claude:UUID`;
 person targets cannot be used for approval or automatic forwarding. The real
-adapter must additionally validate the local destination before queueing delivery.
+adapter additionally validates the local namespace; the local relay checks
+session availability before delivering anything to OpenCode.
 
 Inbox output removes escape sequences, control characters, and invisible Unicode
 formatting controls from remote text. Original text is retained for the explicitly
@@ -109,7 +137,7 @@ approved recipient, not executed. Treat all remote content as untrusted data.
 Held messages expire after seven days, including while the listener is idle;
 expiration is checked before approval and status/inbox reads. Expiration changes
 eligibility, not data erasure: deduplication/status tombstones persist. No desktop
-notification is enabled in this preview, and `--watch` never approves a message.
+notification is enabled, and `--watch` never approves a message.
 
 ### Agent deny rules
 
@@ -188,10 +216,11 @@ OS/user separation if isolation from the local agent is required.
   against automatically retrying ambiguous session API deliveries.
 - `reply_to`, if supplied by the sending adapter, identifies the original remote
   receipt ID. Suggestions are scoped to that contact and map back to the recorded
-  source session. They never approve or route a reply automatically. B5 must wire
-  this metadata explicitly; plain text is not parsed for routing instructions.
+   source session. They never approve or route a reply automatically. The local
+   MCP accepts `reply_to` only for a message from that person already delivered to
+   the caller; plain text is not parsed for routing instructions.
 
-## Queue integration contract (B5 dependency)
+## Queue integration contract
 
 Courier accepts a queue with a shared `sqlite3.Connection` as `db`, and a
 `transaction()` context that starts `BEGIN IMMEDIATE`, checks the local queue
@@ -199,24 +228,57 @@ contract, and atomically commits/rolls back **both queue and courier tables**.
 Its methods must not independently commit while in that transaction:
 
 - `claim("person:")`: one pending outbound dictionary with `id`, `source`,
-  `target`, `text`, and optional `reply_to`; never claim local session targets.
-- `mark(id, state, result)` and `release(id)`; release is only for person targets.
-- `insert_inbound(source, target=None, text, remote_key)`: held dictionary with
-  the newly allocated `id`. Only this API accepts a `person:` source.
-- `get(id)`: dictionary used to render held text.
+  `target`, and `payload` containing `text` and optional `reply_to`; never claim
+  local session targets.
+- `mark(id, state, result)` finalizes only sending messages. `release(id)` is only
+  for sending person targets and returns them to pending.
+- `insert_inbound(source, text, remote_key=..., reply_to=None)`: held receipt with
+  newly allocated `id`, `state`, and `duplicate`. Only this API accepts a `person:`
+  source. Courier metadata must exist for a duplicate; missing metadata requires
+  operator review, not an automatic replay into a session.
+- `get(id)`: dictionary in the same shape as a claimed row.
 - `approve_inbound(id, target)`: validate the authorized local target and change
   **only held inbound** to pending for local delivery. Never deliver inline.
-- `cancel_person("person:NAME")`: cancel held and approved/pending inbound and
+- `reject_inbound(id, reason=...)`: reject held rows. Expiration uses this same
+  queue state with a retention reason, while the courier's receipt reports
+  `expired` distinctly. There is no `expired` state in the local queue.
+- `cancel_person("person:NAME", outbound=True)`: cancel held and approved/pending inbound and
   pending outbound for exactly that contact, without touching other contacts,
   sending/uncertain jobs, or already-delivered messages.
 
-The last three methods and `db` are explicit proposed adapter requirements beyond
-the initial C0 sketch. They must be reconciled with C0 before B5; courier does not
-reach into the local queue's tables or assume a private message schema. All its
-own tables use the `courier_` prefix. No fake queue is shipped as an operational
-fallback. After C0.8/C0.9 approval, the real adapter must be tested for concurrent
-CLI/worker access, crash recovery, queue binding, and revoked-contact races before
-any live acceptance test.
+The operational factory uses `LocalMailbox(state_root())`, with the inherited node
+and bridge state environment. All courier writes occur inside its non-nesting
+transaction; queue methods join that transaction. Courier never writes queue
+tables directly. All its own tables use the `courier_` prefix. A fake queue is used
+only in tests, never as an operational fallback. Real-queue tests cover the MCP
+send path, local relay delivery with mocked API effects, correlated replies,
+independent CLI/worker connections, crash recovery, queue binding, and revocation
+racing an upload.
+
+## Read-only diagnostics
+
+```sh
+python3 -B courier.py doctor
+python3 -B courier.py doctor --offline
+```
+
+Doctor validates private configuration, database and existing SQLite sidecar
+permissions, held messages/expiry due, incomplete sending claims, and retry-due
+uploads. It also reports all local queue namespace counts so unclaimed outbound
+work is visible. Those aggregate counts may include unrelated local deliveries.
+
+By default it probes the configured TCP listener and each outbound contact's
+authenticated `/v1/whoami`. TCP reachability alone cannot prove the listener is
+this courier; contact probes independently compare the expected person/protocol.
+`--offline` makes no connections. Identity probes consume rate-limit budget but
+do not submit text or invoke a model. Findings never include tokens, cards, or
+remote response content. A stale JSON contact snapshot is not used to probe a
+revoked contact: SQLite remains authoritative.
+
+Doctor opens SQLite read-only. It does not create directories or queues, migrate,
+claim, release, expire, approve, send, repair snapshots, start services, or acquire
+worker locks. `FAIL` exits with status 1; `WARN` is advisory. Missing state is a
+warning, not permission to initialize it automatically.
 
 ## WSL and live acceptance (not performed)
 
