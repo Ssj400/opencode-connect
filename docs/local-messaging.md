@@ -178,8 +178,8 @@ A courier that exchanges messages with other people uses only these
 - `claim("person:")`, `mark(...)`, and `release(id)` handle uploads. `release` returns
   a claimed upload to `pending`, which is safe only because uploads are idempotent.
   An upload's `payload` holds its `text` and, when the sender answered that person's
-  message, `reply_to`: the `send` tool accepts it only for a message from that person
-  already delivered to the caller.
+  message, `reply_to`: the `send` tool accepts it only for a message from the
+  destination already delivered to the caller.
 
 States are `held`, `pending`, `sending`, `delivered`, `uncertain`, `failed`,
 `cancelled`, and `rejected`. Held messages from other people do not count toward

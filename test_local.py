@@ -465,7 +465,7 @@ class CourierQueueApiTests(unittest.TestCase):
                 self.box.reject_inbound(message["id"], reason=reason)
             self.assertEqual(self.box.get(message["id"])["state"], "held")
 
-    def test_reply_to_names_only_a_delivered_message_from_that_person(self):
+    def test_reply_to_names_only_a_delivered_message_from_the_destination(self):
         held = self.hold()
         self.box.approve_inbound(held["id"], "ses_TARGET")
         with self.assertRaises(BridgeError):  # Approved but not yet delivered.
@@ -476,11 +476,13 @@ class CourierQueueApiTests(unittest.TestCase):
         local = self.box.enqueue("ses_OTHER", "ses_TARGET", "No link")
         self.assertNotIn("reply_to", self.box.get(local["id"])["payload"])
         self.box.mark(self.box.claim()["id"], "delivered", {"inbox_id": "inbox_EXAMPLE"})
+        answer = self.box.enqueue("ses_TARGET", "ses_OTHER", "Local answer", reply_to=local["id"])
+        self.assertEqual(self.box.get(answer["id"])["payload"]["reply_to"], local["id"])
         for index, (source, target, reply_to, error) in enumerate((
                 ("ses_OTHER", "person:alice", held["id"], "delivered to this session"),  # Another session.
                 ("ses_TARGET", "person:bob", held["id"], "delivered to this session"),  # Another person.
+                ("ses_TARGET", "ses_THIRD", local["id"], "delivered to this session"),  # Another sender.
                 ("ses_TARGET", "person:alice", "msg_" + "0" * 32, "delivered to this session"),
-                ("ses_TARGET", "ses_OTHER", local["id"], "remote person"),  # Delivered, but local.
                 ("ses_TARGET", "person:alice", "not-a-message-id", "message ID"),
                 ("ses_TARGET", "person:alice", 7, "message ID"))):
             with self.subTest(case=index), self.assertRaisesRegex(BridgeError, error):
