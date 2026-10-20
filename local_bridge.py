@@ -2,6 +2,7 @@
 """Local OpenCode text queues: no SSH, remote configuration, or model-backed discovery."""
 
 import argparse
+import contextlib
 import fcntl
 import json
 import os
@@ -84,6 +85,9 @@ def canonical(value, node=None):
 
 # Version 2 adds the claude: and person: namespaces. Rows keep the same schema.
 SCHEMA_VERSION = 2
+STATES = frozenset(("held", "pending", "sending", "delivered", "uncertain", "failed", "cancelled", "rejected"))
+REMOTE_KEY = re.compile(r"[A-Za-z0-9._:-]{1,128}")
+MESSAGE_ID = re.compile(r"msg_[0-9a-f]{32}")
 
 
 class LocalMailbox(Mailbox):
@@ -118,9 +122,7 @@ class LocalMailbox(Mailbox):
         """Record a human decision about a stale sending or uncertain message; never resends."""
         if state not in ("delivered", "failed", "cancelled"):
             raise BridgeError("A resolved message must become delivered, failed, or cancelled.")
-        with self.db:
-            self.db.execute("BEGIN IMMEDIATE")
-            self._check_contract()
+        with self._write():
             row = self.db.execute("SELECT state FROM messages WHERE id=?", (message_id,)).fetchone()
             if row is None or row["state"] not in ("sending", "uncertain"):
                 raise BridgeError("Only sending or uncertain messages can be resolved.")
@@ -176,9 +178,7 @@ class LocalMailbox(Mailbox):
         match = self.node + ":" if match is None else match
         if not isinstance(match, str) or ":" not in match:
             raise BridgeError("A claim must name an address namespace.")
-        with self.db:
-            self.db.execute("BEGIN IMMEDIATE")
-            self._check_contract()
+        with self._write():
             row = self.db.execute("SELECT * FROM messages WHERE state='pending' AND substr(target, 1, ?) = ? "
                                   "ORDER BY created LIMIT 1", (len(match), match)).fetchone()
             if row is None:
@@ -187,6 +187,146 @@ class LocalMailbox(Mailbox):
         result = dict(row)
         result["payload"] = json.loads(result["payload"])
         return result
+
+    @contextlib.contextmanager
+    def transaction(self):
+        """One write transaction that checks the queue contract before anything else.
+
+        Every queue method joins it. A courier may use `self.db` inside it for its own
+        `courier_` tables only, never for `messages`, `local_contract`, or
+        `local_inbound_keys`. Commits on exit and rolls back on any exception.
+        """
+        if self.db.in_transaction:
+            raise BridgeError("A local queue transaction is already open.")
+        with self.db:
+            self.db.execute("BEGIN IMMEDIATE")
+            self._check_contract()
+            yield self
+
+    @contextlib.contextmanager
+    def _write(self):
+        """Join the caller's transaction, or open one."""
+        if self.db.in_transaction:
+            yield
+        else:
+            with self.transaction():
+                yield
+
+    def mark(self, message_id, state, result=None):
+        """Finalize a sending message, with the cross-machine mailbox's rules."""
+        if state not in ("delivered", "uncertain", "failed", "cancelled"):
+            raise BridgeError("Transition not allowed; messages are not retried automatically.")
+        with self._write():
+            row = self.db.execute("SELECT state FROM messages WHERE id=?", (message_id,)).fetchone()
+            if not row or row["state"] != "sending":
+                raise BridgeError("Only messages in the sending state can be finalized.")
+            self.db.execute("UPDATE messages SET state=?,result=? WHERE id=?",
+                            (state, json.dumps(result, ensure_ascii=False), message_id))
+        return {"id": message_id, "state": state}
+
+    def release(self, message_id):
+        """Return a claimed upload to a remote person to pending: the courier's upload is idempotent."""
+        with self._write():
+            row = self.db.execute("SELECT state, target FROM messages WHERE id=?", (message_id,)).fetchone()
+            if row is None or row["state"] != "sending" or not row["target"].startswith("person:"):
+                raise BridgeError("Only a sending message for a remote person can be released.")
+            self.db.execute("UPDATE messages SET state='pending' WHERE id=?", (message_id,))
+        return {"id": message_id, "state": "pending"}
+
+    def insert_inbound(self, source, text, *, remote_key, reply_to=None):
+        """Hold a remote person's message, with no target, until a human approves it.
+
+        Idempotent per (source, remote_key): a repeat returns the first message.
+        """
+        source = canonical(source, self.node)
+        if not source.startswith("person:"):
+            raise BridgeError("Only a remote person's message is held for approval.")
+        if not isinstance(text, str) or not text.strip() or len(text) > 12000:
+            raise BridgeError("Messages must contain between 1 and 12000 characters.")
+        if not isinstance(remote_key, str) or not REMOTE_KEY.fullmatch(remote_key):
+            raise BridgeError("Invalid remote idempotency key.")
+        if reply_to is not None and (not isinstance(reply_to, str) or not MESSAGE_ID.fullmatch(reply_to)):
+            raise BridgeError("Invalid reply_to message ID.")
+        with self._write():
+            self.db.execute("""CREATE TABLE IF NOT EXISTS local_inbound_keys (
+                source TEXT NOT NULL, remote_key TEXT NOT NULL, message_id TEXT NOT NULL,
+                PRIMARY KEY (source, remote_key))""")
+            known = self.db.execute("SELECT message_id FROM local_inbound_keys WHERE source=? AND remote_key=?",
+                                    (source, remote_key)).fetchone()
+            if known is not None:
+                row = self.db.execute("SELECT state FROM messages WHERE id=?", (known[0],)).fetchone()
+                return {"id": known[0], "state": row["state"], "duplicate": True}
+            message_id = "msg_" + uuid.uuid4().hex
+            payload = {"text": text, "source_id": source.split(":", 1)[1], "target_id": None,
+                       "source_address": source, "target_address": None, "reply_to": reply_to}
+            self.db.execute("INSERT INTO messages VALUES (?,?,?,?,?,?,?,?,NULL)",
+                            (message_id, time.time(), source, "", "queue", "message",
+                             json.dumps(payload, ensure_ascii=False), "held"))
+            self.db.execute("INSERT INTO local_inbound_keys VALUES (?,?,?)", (source, remote_key, message_id))
+        return {"id": message_id, "state": "held", "duplicate": False}
+
+    def approve_inbound(self, message_id, target):
+        """Give a held message the destination a human chose; its consumer then claims it."""
+        destination = canonical(target, self.node)
+        if destination.startswith("person:"):
+            raise BridgeError("An approved message must go to a local OpenCode or Claude Code session.")
+        with self._write():
+            row = self.db.execute("SELECT state, source, payload FROM messages WHERE id=?", (message_id,)).fetchone()
+            if row is None or row["state"] != "held" or not row["source"].startswith("person:"):
+                raise BridgeError("Only a held message from a remote person can be approved.")
+            payload = json.loads(row["payload"])
+            payload.update(target_id=destination.split(":", 1)[1], target_address=destination)
+            self.db.execute("UPDATE messages SET state='pending', target=?, payload=? WHERE id=?",
+                            (destination, json.dumps(payload, ensure_ascii=False), message_id))
+        return {"id": message_id, "state": "pending", "target": destination}
+
+    def reject_inbound(self, message_id):
+        with self._write():
+            changed = self.db.execute("UPDATE messages SET state='rejected' WHERE id=? AND state='held' "
+                                      "AND substr(source, 1, 7)='person:'", (message_id,)).rowcount
+        if not changed:
+            raise BridgeError("Only a held message from a remote person can be rejected.")
+        return {"id": message_id, "state": "rejected"}
+
+    def cancel_person(self, person, *, outbound=False):
+        """Cancel a person's held and approved-but-unclaimed messages; sending ones stay.
+
+        With outbound=True, unsent pending messages to that person are cancelled too.
+        """
+        address = canonical(person if isinstance(person, str) and ":" in person else f"person:{person}",
+                            self.node)
+        if not address.startswith("person:"):
+            raise BridgeError("Only a remote person's messages can be cancelled this way.")
+        with self._write():
+            changed = self.db.execute("UPDATE messages SET state='cancelled' WHERE source=? "
+                                      "AND state IN ('held', 'pending')", (address,)).rowcount
+            if outbound:
+                changed += self.db.execute("UPDATE messages SET state='cancelled' WHERE target=? "
+                                           "AND state='pending'", (address,)).rowcount
+        return changed
+
+    def inbound(self, states=("held",)):
+        """Remote people's messages in the given states, oldest first. Text is raw."""
+        states = tuple(states)
+        if not states or set(states) - STATES:
+            raise BridgeError("Unknown message state.")
+        rows = self.db.execute(
+            "SELECT id, source, created, state, payload FROM messages WHERE substr(source, 1, 7)='person:' "
+            f"AND state IN ({','.join('?' * len(states))}) ORDER BY created", states).fetchall()
+        result = []
+        for row in rows:
+            payload = json.loads(row["payload"])
+            result.append({"id": row["id"], "source": row["source"], "created": row["created"],
+                           "state": row["state"], "text": payload["text"], "reply_to": payload.get("reply_to")})
+        return result
+
+    def inbound_state(self, message_id, source):
+        """The state of one message, only when it came from that remote person."""
+        source = canonical(source, self.node)
+        if not source.startswith("person:"):
+            raise BridgeError("Only a remote person's message state can be read this way.")
+        row = self.db.execute("SELECT state FROM messages WHERE id=? AND source=?", (message_id, source)).fetchone()
+        return row["state"] if row else None
 
     def enqueue(self, source_id, target, text):
         source, destination = canonical(source_id, self.node), canonical(target, self.node)
@@ -200,11 +340,10 @@ class LocalMailbox(Mailbox):
                    "target_id": destination.split(":", 1)[1],
                    "source_address": source, "target_address": destination}
         message_id = "msg_" + uuid.uuid4().hex
-        with self.db:
-            self.db.execute("BEGIN IMMEDIATE")
-            self._check_contract()
-            count = self.db.execute("SELECT count(*) FROM messages WHERE created > ?",
-                                    (time.time() - 3600,)).fetchone()[0]
+        with self._write():
+            # Only local sources count: held messages from other people must not consume this budget.
+            count = self.db.execute("SELECT count(*) FROM messages WHERE created > ? "
+                                    "AND substr(source, 1, 7) != 'person:'", (time.time() - 3600,)).fetchone()[0]
             if count >= 30:
                 raise BridgeError("The local queue has reached the limit of 30 sends per hour.")
             self.db.execute("INSERT INTO messages VALUES (?,?,?,?,?,?,?,?,NULL)",

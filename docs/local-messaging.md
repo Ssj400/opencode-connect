@@ -153,6 +153,33 @@ every local worker and MCP process together. `diagnose` reports
 `python3 local_bridge.py resolve ID --state delivered|failed|cancelled` records a
 human-reviewed outcome for a stale `sending` or `uncertain` message. It never resends.
 
+### Courier interface
+
+A courier that exchanges messages with other people uses only these
+`LocalMailbox` methods and never writes the `messages`, `local_contract`, or
+`local_inbound_keys` tables itself:
+
+- `transaction()` opens one write transaction after checking the contract. Every
+  method below joins an open transaction, or opens its own. Inside it, the courier
+  may use `db` for its own tables, named with a `courier_` prefix.
+- `insert_inbound(source, text, *, remote_key, reply_to=None)` holds a message from
+  `person:<name>` with no target. It is idempotent per `(source, remote_key)`; a
+  repeat returns the first message with `duplicate: true`.
+- `approve_inbound(id, target)` gives a held message the destination a human chose:
+  this node's OpenCode session or `claude:<uuid>`, never another person.
+  `reject_inbound(id)` marks it `rejected`.
+- `cancel_person(person, outbound=False)` cancels that person's held and approved
+  but unclaimed messages; `outbound=True` also cancels unsent messages to them.
+  Messages already `sending` are left for review.
+- `inbound(states)` lists remote messages with raw text, and `inbound_state(id, source)`
+  reports one message's state only to the person who sent it.
+- `claim("person:")`, `mark(...)`, and `release(id)` handle uploads. `release` returns
+  a claimed upload to `pending`, which is safe only because uploads are idempotent.
+
+States are `held`, `pending`, `sending`, `delivered`, `uncertain`, `failed`,
+`cancelled`, and `rejected`. Held messages from other people do not count toward
+the local limit of 30 sends per hour.
+
 ### Service selection limitation
 
 The contract compares configuration, **not service identity or authentication**.
