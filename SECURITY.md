@@ -2,6 +2,12 @@
 
 ## Trust model
 
+The opt-in [local messaging mode](docs/local-messaging.md) uses only the local
+OpenCode service and separate private runtime state. Session discovery exposes
+titles, IDs and directories, never conversation content. Treat these metadata as
+private; do not publish discovery output. Selecting a title is not authorization
+to control that session. Existing permissions remain in force.
+
 A personal tool for two trusted machines and system accounts: Linux coordinator
 → Windows SSH → WSL. MCP uses stdio and does not open an additional network port.
 The OpenCode API remains local and is accessed through `opencode api`.

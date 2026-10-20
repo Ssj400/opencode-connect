@@ -105,7 +105,8 @@ class PublicTests(unittest.TestCase):
     def test_cli_help_is_in_english(self):
         cases = [("bridge.py", [], "transport"),
                  ("collab.py", ["send"], "Local session alias or node:ses_ID"),
-                 ("deploy.py", [], "Explicitly copy routes.json")]
+                 ("deploy.py", [], "Explicitly copy routes.json"),
+                 ("local_bridge.py", [], "Local OpenCode text queues")]
         for script, arguments, expected in cases:
             with self.subTest(script=script):
                 result = subprocess.run([sys.executable, "-B", str(ROOT / script),
@@ -123,22 +124,22 @@ class PublicTests(unittest.TestCase):
                 shutil.copyfile(ROOT / name, target)
             code = '''import sys,pathlib,unittest
 root=pathlib.Path(sys.argv[1]);sys.path.insert(0,str(root))
-import config,bridge,collab,mcp_server,deploy,audit_public,core,opencode_adapter,transports
-for module in (config,bridge,collab,mcp_server,deploy,audit_public,core,opencode_adapter,transports):
+import config,bridge,collab,mcp_server,deploy,audit_public,core,opencode_adapter,transports,local_bridge,local_mcp_server
+for module in (config,bridge,collab,mcp_server,deploy,audit_public,core,opencode_adapter,transports,local_bridge,local_mcp_server):
     assert pathlib.Path(module.__file__).parent == root
 assert audit_public.audit(root) == []
 try: config.load_config(root)
 except config.BridgeError: pass
 else: raise AssertionError("unexpected configuration")
 assert mcp_server.handle({"id":1,"method":"initialize"})["result"]["serverInfo"]["name"] == "opencode-connect"
-suite=unittest.defaultTestLoader.loadTestsFromNames(["test_bridge", "test_collab", "test_core", "test_adapters", "test_chat"])
+suite=unittest.defaultTestLoader.loadTestsFromNames(["test_bridge", "test_collab", "test_core", "test_adapters", "test_chat", "test_local"])
 result=unittest.TextTestRunner(verbosity=0).run(suite)
 sys.exit(0 if result.wasSuccessful() else 1)
 '''
             result = subprocess.run([sys.executable, "-B", "-I", "-c", code, folder],
                                     cwd=folder, capture_output=True, text=True, timeout=60)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-            for script in ("bridge.py", "collab.py", "deploy.py"):
+            for script in ("bridge.py", "collab.py", "deploy.py", "local_bridge.py"):
                 result = subprocess.run([sys.executable, "-B", str(root / script), "--help"],
                                         cwd=folder, capture_output=True, text=True, timeout=10)
                 self.assertEqual(result.returncode, 0, result.stderr)
