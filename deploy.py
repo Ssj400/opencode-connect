@@ -50,6 +50,9 @@ FILES = (
     "test_local_identity.py",
     "docs/local-messaging.md",
     # Federated courier between people
+    "courier.py",
+    "test_courier.py",
+    "docs/multi-person.md",
     # Claude Code harness
     "claude_hook.py",
     "claude_mcp_server.py",

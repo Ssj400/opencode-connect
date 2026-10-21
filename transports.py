@@ -6,15 +6,61 @@ This infrastructure layer knows neither agent session IDs nor harness API routes
 import base64
 import errno
 import hashlib
+import http.client
 import json
 import os
 from pathlib import Path
 import socket
 import subprocess
 from typing import Any, NamedTuple, Protocol
+from urllib.parse import urlsplit
 
 from config import private_directory, validate_ssh
 from core import BridgeError
+
+
+class HttpError(BridgeError):
+    """An HTTP status failure; response bodies and credentials are not diagnostics."""
+
+    def __init__(self, status):
+        self.status = status
+        super().__init__(f"HTTP request failed with status {status}.")
+
+
+def http_json(url, *, method="GET", headers=None, data=None, timeout=5, maximum=65536):
+    """One bounded JSON request, without proxies, redirects, or automatic retries."""
+    try:
+        parsed = urlsplit(url)
+        if (parsed.scheme not in {"http", "https"} or not parsed.hostname
+                or parsed.username is not None or parsed.password is not None or parsed.fragment):
+            raise ValueError
+        port = parsed.port
+    except ValueError as exc:
+        raise BridgeError("Invalid HTTP URL.") from exc
+    connection_type = http.client.HTTPSConnection if parsed.scheme == "https" else http.client.HTTPConnection
+    connection = connection_type(parsed.hostname, port=port, timeout=timeout)
+    try:
+        body = None if data is None else json.dumps(data, ensure_ascii=False).encode("utf-8")
+        if body is not None and len(body) > maximum:
+            raise BridgeError("HTTP request exceeds the size limit.")
+        request_headers = {"Accept": "application/json", **(headers or {})}
+        if body is not None:
+            request_headers["Content-Type"] = "application/json"
+        path = parsed.path or "/"
+        if parsed.query:
+            path += "?" + parsed.query
+        connection.request(method, path, body=body, headers=request_headers)
+        response = connection.getresponse()
+        if not 200 <= response.status < 300:
+            raise HttpError(response.status)
+        output = response.read(maximum + 1)
+        if len(output) > maximum:
+            raise BridgeError("HTTP response exceeds the size limit.")
+        return decode_response(output)
+    except (OSError, http.client.HTTPException, ValueError) as exc:
+        raise BridgeError("HTTP request failed; no automatic retry was made.") from exc
+    finally:
+        connection.close()
 
 
 class CommandTransport(Protocol):
