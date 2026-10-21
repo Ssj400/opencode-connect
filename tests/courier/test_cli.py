@@ -98,17 +98,19 @@ class CourierConfigurationTests(unittest.TestCase):
                           ["service", "start"], ["service", "stop"], ["approve"],
                           ["contact", "bob", "--to", "wsl:ses_example", "--direct"],
                           ["address", "--listen", "192.0.2.20:9000", "--url", "http://192.0.2.20:9000"], ["pair"],
-                          ["pair", "http://192.0.2.20:8765#ABCD-EFGH-JKMN"]):
+                          ["pair", "http://192.0.2.20:8765#ABCD-EFGH-JKMN"], ["setup"], ["unpair", "bob"]):
             # A temporary configuration home: even if a refusal regressed, no unit or
             # configuration could land in the real one.
             with self.subTest(arguments=arguments), tempfile.TemporaryDirectory(prefix="courier-home-") as home, \
                     patch.dict(os.environ, {"XDG_CONFIG_HOME": home}), patch("sys.stdin.isatty", return_value=False), \
                     patch("sys.stderr", new_callable=io.StringIO), \
                     patch("opencode_connect.courier.cli.read_config") as read, \
-                    patch("opencode_connect.courier.service.subprocess.run") as run:
+                    patch("opencode_connect.courier.service.subprocess.run") as run, \
+                    patch("opencode_connect.courier.host.subprocess.run") as inspect:
                 self.assertEqual(main(arguments, queue_factory=Mock()), 1)
                 read.assert_not_called()
                 run.assert_not_called()
+                inspect.assert_not_called()
                 self.assertEqual(list(Path(home).iterdir()), [])
 
     def test_real_queue_factory_uses_local_mailbox_and_unchanged_environment(self):

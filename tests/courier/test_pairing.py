@@ -189,6 +189,16 @@ class PairingTests(unittest.TestCase):
         self.alice.close_offer()
         self.assertEqual(self.alice.settings(), before)
 
+    def test_a_contact_removed_while_pairing_stays_removed(self):
+        self.alice.trust("bob", {"person": "bob", "url": "http://192.0.2.20:8765", "token": "C" * 43})
+        self.alice.join(self.request(self.alice.offer(replace=True)), "127.0.0.1")
+        self.alice.untrust("bob")
+        self.assertIsNone(self.alice.offer_state())
+        self.alice.close_offer()
+        self.now += OFFER_SECONDS + 1
+        self.alice.tidy()
+        self.assertEqual(self.alice.contacts(), [])
+
     def test_the_card_must_come_from_the_address_it_names_and_the_name_offered(self):
         code = self.alice.offer()
         error = self.refused(400, self.request(code, url="http://192.0.2.30:8765"))

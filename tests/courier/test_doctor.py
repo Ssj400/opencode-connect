@@ -12,7 +12,7 @@ from unittest.mock import patch
 from opencode_connect.core import BridgeError
 from opencode_connect.courier.app import RETENTION, Courier
 from opencode_connect.courier.cli import main
-from opencode_connect.courier.doctor import doctor, local_queue_root
+from opencode_connect.courier.doctor import doctor, listener_answers, local_queue_root
 from opencode_connect.courier.settings import SOCKET_TIMEOUT, write_config
 from opencode_connect.local import mailbox
 from tests.courier.fakes import configuration
@@ -120,6 +120,12 @@ class CourierDoctorTests(unittest.TestCase):
         self.assertTrue(any(row["area"] == "Snapshot" for row in result))
         http.assert_not_called()
         self.assertEqual(self.snapshot(), before)
+
+    def test_only_one_specific_endpoint_is_probed(self):
+        with patch("opencode_connect.courier.doctor.socket.create_connection") as tcp:
+            for listen in ("127.0.0.1:0", "[::]:8765"):
+                self.assertIsNone(listener_answers(listen))
+        tcp.assert_not_called()
 
     def test_readonly_state_path_matches_the_real_factory(self):
         import os

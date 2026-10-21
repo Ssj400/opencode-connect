@@ -13,7 +13,7 @@ from opencode_connect.core import BridgeError
 from opencode_connect.courier.app import Courier
 from opencode_connect.courier.cli import main
 from opencode_connect.courier.notify import desktop_notification
-from opencode_connect.courier.settings import read_config, write_config
+from opencode_connect.courier.settings import RequestError, read_config, write_config
 from tests.courier.fakes import FakeQueue, configuration
 
 ASKER = "claude:" + str(uuid.UUID(int=3))
@@ -194,6 +194,22 @@ class RouteCliTests(unittest.TestCase):
         self.assertEqual(self.courier().queue.get(unrouted["id"])["target"], "wsl:ses_example")
         result, output, prompts = self.command("approve", "--to", "wsl:ses_example")
         self.assertEqual((result, prompts), (1, []))
+
+    def test_unpair_revokes_both_directions_and_the_route_after_one_confirmation(self):
+        app = self.courier()
+        app.trust("alice", {"person": "alice", "url": "http://192.0.2.20:8765", "token": "A" * 43})
+        app.set_route("alice", "wsl:ses_example", "direct")
+        result, output, prompts = self.command("unpair", "dave")
+        self.assertEqual((result, prompts), (1, []))
+        self.assertIn("not a contact", output)
+        result, output, prompts = self.command("unpair", "alice")
+        self.assertEqual(result, 0)
+        self.assertEqual(len(prompts), 1)
+        self.assertIn("alice", prompts[0])
+        self.assertEqual([row["person"] for row in self.courier().contacts()], ["carol"])
+        self.assertIn("unpair bob", output)
+        with self.assertRaises(RequestError):
+            self.courier().authenticate("Bearer " + self.alice["token"])
 
     def test_the_worker_gets_desktop_notices(self):
         with patch("opencode_connect.courier.cli.Courier") as courier_class, \

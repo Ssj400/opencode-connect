@@ -151,6 +151,8 @@ class Courier(PairingMixin):
         config["contacts"].pop(name, None)
         self.save_settings(config)
         self.db.execute("DELETE FROM courier_routes WHERE contact=?", (name,))
+        # A pairing in progress with them ends too: its lapse would restore them.
+        self.db.execute("DELETE FROM courier_offer WHERE contact=?", (name,))
         # Includes approved-but-pending inbound and pending outbound rows.
         cancellable = []
         for (message_id,) in self.db.execute(

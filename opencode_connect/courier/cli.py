@@ -17,6 +17,8 @@ from opencode_connect.courier.service import restart_service, service_command
 from opencode_connect.courier.settings import (SOCKET_TIMEOUT, clean_display, contact_url, default_config_path,
                                                interactive_confirmation, listen_address, read_config,
                                                require_terminal, write_config)
+from opencode_connect.courier.setup import setup
+from opencode_connect.courier.status import status
 from opencode_connect.courier.worker import CourierBusy, relay_worker, run_courier, stop_on_sigterm
 from opencode_connect.transports import http_json
 
@@ -144,6 +146,10 @@ def main(argv=None, *, queue_factory=real_queue):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", type=Path, default=default_config_path())
     sub = parser.add_subparsers(dest="command", required=True)
+    first = sub.add_parser("setup", help="Choose a name and address, check this machine, and say what is left to do")
+    first.add_argument("--allow-172", action="store_true",
+                       help="On WSL, also offer 172.16/12 addresses, for a LAN that uses that range")
+    sub.add_parser("status", help="Who this courier is, whether it runs, and what waits; reads only")
     init = sub.add_parser("init", help="Create a private courier identity interactively")
     init.add_argument("--person", required=True)
     init.add_argument("--listen", required=True)
@@ -172,6 +178,8 @@ def main(argv=None, *, queue_factory=real_queue):
     pair.add_argument("link", nargs="?", help="The link the other person's `pair` printed; without it, print one")
     pair.add_argument("--for", dest="for_person", help="Accept only this person's courier")
     pair.add_argument("--replace", action="store_true", help="Pair again with someone who is already a contact")
+    unpair = sub.add_parser("unpair", help="Stop exchanging messages with a contact, in both directions")
+    unpair.add_argument("person")
     sub.add_parser("contacts", help="List contact direction permissions and routes, without tokens")
     contact = sub.add_parser("contact", help="Choose the local session a contact's messages go to")
     contact.add_argument("person")
@@ -193,12 +201,16 @@ def main(argv=None, *, queue_factory=real_queue):
             findings = doctor(args.config, network=not args.offline)
             print(json.dumps(findings, ensure_ascii=False))
             return 1 if any(row["status"] == "FAIL" for row in findings) else 0
+        if args.command == "status":
+            code, lines = status(args.config)
+            print("\n".join(lines))
+            return code
         if args.command == "address":
             listen_address(args.listen, args.allow_wildcard)
             contact_url(args.url)
             interactive_confirmation(f"Confirm address: listen on {args.listen}, reachable at {args.url}")
-        elif args.command in {"approve", "contact", "pair"}:
-            require_terminal()  # The code is asked once the queue shows what would change.
+        elif args.command in {"approve", "contact", "pair", "setup", "unpair"}:
+            require_terminal()  # The code is asked once it is clear what would change.
         elif (args.command in {"init", "invite", "trust", "untrust", "reject"}
                 or args.command == "service" and args.action in {"install", "uninstall", "start", "stop"}):
             detail = args.command
@@ -218,6 +230,8 @@ def main(argv=None, *, queue_factory=real_queue):
             return 0
         if args.command == "service":
             return service_command(args.action, args.config)
+        if args.command == "setup":
+            return setup(args.config, allow_172=args.allow_172)
         config = read_config(args.config)
         queue = queue_factory(args.config)
         try:
@@ -240,6 +254,15 @@ def main(argv=None, *, queue_factory=real_queue):
             elif args.command == "untrust":
                 courier.untrust(args.person)
                 print("Contact revoked; unsent messages cancelled.")
+            elif args.command == "unpair":
+                if args.person not in {row["person"] for row in courier.contacts()}:
+                    raise BridgeError(f"{args.person} is not a contact.")
+                interactive_confirmation(f"Confirm unpair {args.person}: revoke both directions, cancel unsent "
+                                         "messages, and remove the route")
+                courier.untrust(args.person)
+                print(f"Unpaired {args.person}: their token no longer works here, so what they send fails at once, "
+                      "and unsent messages were cancelled.")
+                print(f"Ask {args.person} to run `python3 bin/courier.py unpair {config['person']}` too.")
             elif args.command == "contacts":
                 print(json.dumps(courier.contacts()))
             elif args.command == "inbox":

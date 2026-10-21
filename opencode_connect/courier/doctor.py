@@ -24,6 +24,40 @@ def local_queue_root():
     return base / "opencode-connect/local"
 
 
+def open_state(root):
+    """A read-only connection to the queue holding the courier's tables, once its files
+    are private; None before the queue exists. Nothing is created or repaired."""
+    database = Path(root) / ".state/mail.sqlite3"
+    if not database.exists() and not database.is_symlink():
+        return None
+    check_private_directory(database.parent)
+    info = database.lstat()
+    if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+            or stat.S_IMODE(info.st_mode) != 0o600):
+        raise BridgeError("Insecure courier database.")
+    for suffix in ("-wal", "-shm", "-journal"):
+        sidecar = database.with_name(database.name + suffix)
+        if sidecar.exists() or sidecar.is_symlink():
+            info = sidecar.lstat()
+            if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                    or stat.S_IMODE(info.st_mode) != 0o600):
+                raise BridgeError("Insecure courier database sidecar.")
+    return sqlite3.connect(database.as_uri() + "?mode=ro", uri=True, timeout=SOCKET_TIMEOUT)
+
+
+def listener_answers(listen):
+    """Whether something accepts TCP at the listen address, which alone does not
+    establish process identity; None when the address names no single endpoint."""
+    host, port = listen_address(listen, allow_wildcard=True)
+    if ipaddress.ip_address(host).is_unspecified or port == 0:
+        return None
+    try:
+        with socket.create_connection((host, port), timeout=SOCKET_TIMEOUT):
+            return True
+    except OSError:
+        return False
+
+
 def doctor(config_path, *, root=None, network=True, clock=time.time):
     """Read configuration/state and bounded identity probes; never send or approve text."""
     findings = []
@@ -33,24 +67,11 @@ def doctor(config_path, *, root=None, network=True, clock=time.time):
         return [{"status": "FAIL", "area": "Configuration", "detail": "Missing or insecure private configuration."}]
     findings.append({"status": "OK", "area": "Configuration", "detail": "Owned private directory and 0600 file."})
     root = local_queue_root() if root is None else Path(root)
-    database = root / ".state/mail.sqlite3"
-    if not database.exists() and not database.is_symlink():
-        findings.append({"status": "WARN", "area": "State", "detail": "Courier queue has not been initialized."})
-    else:
-        try:
-            check_private_directory(database.parent)
-            info = database.lstat()
-            if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
-                    or stat.S_IMODE(info.st_mode) != 0o600):
-                raise BridgeError("Insecure courier database.")
-            for suffix in ("-wal", "-shm", "-journal"):
-                sidecar = database.with_name(database.name + suffix)
-                if sidecar.exists() or sidecar.is_symlink():
-                    info = sidecar.lstat()
-                    if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
-                            or stat.S_IMODE(info.st_mode) != 0o600):
-                        raise BridgeError("Insecure courier database sidecar.")
-            db = sqlite3.connect(database.as_uri() + "?mode=ro", uri=True, timeout=SOCKET_TIMEOUT)
+    try:
+        db = open_state(root)
+        if db is None:
+            findings.append({"status": "WARN", "area": "State", "detail": "Courier queue has not been initialized."})
+        else:
             try:
                 db.execute("BEGIN")
                 saved = db.execute("SELECT data FROM courier_settings WHERE id=1").fetchone()
@@ -76,24 +97,21 @@ def doctor(config_path, *, root=None, network=True, clock=time.time):
             findings.append({"status": "WARN" if any(counts.get(k) for k in ("pending", "sending", "uncertain", "failed")) else "OK",
                              "area": "Local queue", "counts": counts,
                              "detail": "All namespaces; pending may require approval consumers or a local relay."})
-        except (BridgeError, OSError, ValueError, sqlite3.Error):
-            findings.append({"status": "FAIL", "area": "State", "detail": "Insecure, unreadable, or incompatible courier state; no repair attempted."})
-            # Do not probe contacts from a possibly stale JSON snapshot if SQLite
-            # could not establish the authoritative current permissions.
-            return findings
+    except (BridgeError, OSError, ValueError, sqlite3.Error):
+        findings.append({"status": "FAIL", "area": "State", "detail": "Insecure, unreadable, or incompatible courier state; no repair attempted."})
+        # Do not probe contacts from a possibly stale JSON snapshot if SQLite
+        # could not establish the authoritative current permissions.
+        return findings
     if not network:
         findings.append({"status": "WARN", "area": "Network", "detail": "Network probes explicitly skipped."})
         return findings
-    host, port = listen_address(config["listen"], allow_wildcard=True)
-    if ipaddress.ip_address(host).is_unspecified or port == 0:
+    answers = listener_answers(config["listen"])
+    if answers is None:
         findings.append({"status": "WARN", "area": "Listener", "detail": "A specific, nonzero listen endpoint is needed for a reachability probe."})
+    elif answers:
+        findings.append({"status": "OK", "area": "Listener", "detail": "TCP reachable; this alone does not establish process identity."})
     else:
-        try:
-            with socket.create_connection((host, port), timeout=SOCKET_TIMEOUT):
-                pass
-            findings.append({"status": "OK", "area": "Listener", "detail": "TCP reachable; this alone does not establish process identity."})
-        except OSError:
-            findings.append({"status": "FAIL", "area": "Listener", "detail": "Configured TCP listener is not reachable."})
+        findings.append({"status": "FAIL", "area": "Listener", "detail": "Configured TCP listener is not reachable."})
     for name, card in sorted(config["contacts"].items()):
         try:
             identity = http_json(card["url"] + "/v1/whoami", headers={"Authorization": "Bearer " + card["token"]},
