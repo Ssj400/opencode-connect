@@ -1,4 +1,8 @@
-"""The courier's HTTP listener: it authenticates before reading any body byte."""
+"""The courier's HTTP listener: it authenticates before reading any body byte.
+
+Pairing is the one exception: `POST /v1/pair` carries no token yet, so it is
+throttled in memory, limited to a small body, and refused while no offer is open.
+"""
 
 from http.server import BaseHTTPRequestHandler, HTTPServer
 import json
@@ -8,8 +12,8 @@ import sqlite3
 import time
 
 from opencode_connect.core import BridgeError
-from opencode_connect.courier.app import RequestError
-from opencode_connect.courier.settings import SOCKET_TIMEOUT, listen_address
+from opencode_connect.courier.pairing import MAX_PAIR_BODY, Throttle
+from opencode_connect.courier.settings import SOCKET_TIMEOUT, RequestError, listen_address
 
 MAX_BODY = 64 * 1024
 DRAIN_SECONDS = 1
@@ -22,6 +26,7 @@ class CourierServer(HTTPServer):
         host, port = listen_address(listen, allow_wildcard)
         self.address_family = socket.AF_INET6 if ":" in host else socket.AF_INET
         self.courier = courier
+        self.pairing = Throttle()
         super().__init__((host, port), CourierHandler)
 
     def get_request(self):
@@ -88,20 +93,48 @@ class CourierHandler(BaseHTTPRequestHandler):
     def do_POST(self):
         self.dispatch("POST")
 
+    def body_length(self, limit):
+        if self.headers.get("Transfer-Encoding") is not None:
+            raise RequestError(400, "Transfer encoding is not supported.")
+        lengths = self.headers.get_all("Content-Length", [])
+        if lengths and (len(lengths) != 1 or not re.fullmatch(r"[0-9]{1,6}", lengths[0])):
+            raise RequestError(411, "A single Content-Length is required.")
+        length = int(lengths[0]) if lengths else None
+        if length is not None and length > limit:
+            raise RequestError(413, "Message body is too large.")
+        return length
+
+    def json_body(self, length):
+        if length is None:
+            raise RequestError(411, "A single Content-Length is required.")
+        if self.headers.get("Content-Type", "").split(";", 1)[0].strip() != "application/json":
+            raise RequestError(415, "JSON content type is required.")
+        body = self.rfile.read(length)
+        if len(body) != length:
+            raise RequestError(400, "Incomplete body.")
+        try:
+            return json.loads(body)
+        except (ValueError, UnicodeError, RecursionError) as exc:
+            raise RequestError(400, "Invalid JSON body.") from exc
+
+    def pair(self):
+        address = self.client_address[0]
+        if not self.server.pairing.allow(address):
+            raise RequestError(429, "Too many pairing attempts; wait a minute.")
+        if not self.server.courier.offer_open():
+            raise RequestError(404, "No pairing offer is open.")
+        payload = self.json_body(self.body_length(MAX_PAIR_BODY))
+        self.reply(200, self.server.courier.join(payload, address))
+
     def dispatch(self, method):
         try:
+            if method == "POST" and self.path == "/v1/pair":
+                return self.pair()
             auth = self.headers.get_all("Authorization", [])
             if len(auth) != 1:
                 raise RequestError(401, "Authentication required.")
             self.server.courier.begin_request(auth[0])
-            if self.headers.get("Transfer-Encoding") is not None:
-                raise RequestError(400, "Transfer encoding is not supported.")
-            lengths = self.headers.get_all("Content-Length", [])
-            if lengths and (len(lengths) != 1 or not re.fullmatch(r"[0-9]{1,6}", lengths[0])):
-                raise RequestError(411, "A single Content-Length is required.")
-            length = int(lengths[0]) if lengths else 0
-            if length > MAX_BODY:
-                raise RequestError(413, "Message body is too large.")
+            length = self.body_length(MAX_BODY)
             if method == "GET" and length:
                 raise RequestError(400, "GET requests cannot contain a body.")
             if method == "GET" and self.path == "/v1/whoami":
@@ -109,18 +142,9 @@ class CourierHandler(BaseHTTPRequestHandler):
             elif method == "GET" and re.fullmatch(r"/v1/messages/msg_[a-f0-9]{32}", self.path):
                 self.reply(200, self.server.courier.remote_status(auth[0], self.path.rsplit("/", 1)[1], rate_checked=True))
             elif method == "POST" and self.path == "/v1/messages":
-                if not lengths:
-                    raise RequestError(411, "A single Content-Length is required.")
-                if self.headers.get("Content-Type", "").split(";", 1)[0].strip() != "application/json":
-                    raise RequestError(415, "JSON content type is required.")
-                body = self.rfile.read(length)
-                if len(body) != length:
-                    raise RequestError(400, "Incomplete body.")
-                try:
-                    payload = json.loads(body)
-                except (ValueError, UnicodeError, RecursionError) as exc:
-                    raise RequestError(400, "Invalid JSON body.") from exc
-                self.reply(202, self.server.courier.receive(auth[0], payload, rate_checked=True))
+                self.reply(202, self.server.courier.receive(auth[0], self.json_body(length), rate_checked=True))
+            elif method == "POST" and self.path == "/v1/pair/ack":
+                self.reply(200, self.server.courier.confirm_pairing(auth[0], self.json_body(length), rate_checked=True))
             else:
                 raise RequestError(404, "Route not found.")
         except RequestError as exc:

@@ -12,11 +12,15 @@ from opencode_connect.core import BridgeError
 from opencode_connect.courier.app import Courier, local_target
 from opencode_connect.courier.doctor import doctor
 from opencode_connect.courier.notify import desktop_notification
+from opencode_connect.courier.pairing import OFFER_SECONDS, is_vpn, join_offer
 from opencode_connect.courier.service import restart_service, service_command
-from opencode_connect.courier.settings import (clean_display, contact_url, default_config_path,
+from opencode_connect.courier.settings import (SOCKET_TIMEOUT, clean_display, contact_url, default_config_path,
                                                interactive_confirmation, listen_address, read_config,
                                                require_terminal, write_config)
-from opencode_connect.courier.worker import relay_worker, run_courier, stop_on_sigterm
+from opencode_connect.courier.worker import CourierBusy, relay_worker, run_courier, stop_on_sigterm
+from opencode_connect.transports import http_json
+
+WAY_BACK_SECONDS = 30
 
 
 def real_queue(config_path):
@@ -62,6 +66,80 @@ def approve_held(courier, message_id=None, target=None):
         print("No held messages.")
 
 
+def serve_while(courier, config, done, seconds, poll=0.5):
+    """Answer requests until `done()`, for at most `seconds`: in the foreground when no
+    worker runs, else by waiting while the worker, such as the service, answers."""
+    stop = threading.Event()
+    timer = threading.Timer(seconds, stop.set)
+    timer.daemon = True
+    timer.start()
+    try:
+        run_courier(courier, config["listen"], stop=stop, until=done)
+    except CourierBusy:
+        while not done() and not stop.is_set():
+            time.sleep(poll)
+    finally:
+        timer.cancel()
+
+
+def way_back(card, name, attempts=10, wait=1.0):
+    """Whether the contact's courier answers as them with the token it gave this side."""
+    for attempt in range(attempts):
+        try:
+            identity = http_json(card["url"] + "/v1/whoami", headers={"Authorization": "Bearer " + card["token"]},
+                                 timeout=SOCKET_TIMEOUT)
+            return isinstance(identity, dict) and identity.get("person") == name
+        except BridgeError:
+            if attempt < attempts - 1:
+                time.sleep(wait)
+    return False
+
+
+def invite_by_link(courier, config, name, replace):
+    """Open an offer, print its link, and wait for someone to pair before it lapses."""
+    code = courier.offer(name, replace=replace)
+    host = listen_address(config["listen"], allow_wildcard=True)[0]
+    print(f"Pairing offer from {config['person']} at {config['listen']}, open for {OFFER_SECONDS // 60} minutes.")
+    print("On the other person's machine, run:")
+    print(f"  python3 bin/courier.py pair '{config['url']}#{code}'")
+    print("Send it privately: whoever uses it first becomes a contact.")
+    if not is_vpn(host):
+        print(f"Warning: {host} is not in a VPN range. Messages travel unencrypted, so other devices "
+              "on this network could read them.")
+    print("Waiting...", flush=True)
+    finished = False
+    try:
+        serve_while(courier, config, lambda: (courier.offer_state() or {}).get("state") in {None, "confirmed"},
+                    OFFER_SECONDS + 5)
+        state = courier.offer_state()
+        finished = True
+    finally:
+        if not finished:
+            courier.close_offer()  # Interrupted: undo a pairing that nobody confirmed.
+    courier.close_offer()
+    if state is None or state["state"] != "confirmed":
+        print("The offer lapsed; nobody paired.")
+        return 1
+    contact = state["contact"]
+    if way_back(courier.settings()["contacts"][contact], contact):
+        print(f"Paired with {contact}, both ways.")
+    else:
+        print(f"Paired with {contact}. Their courier did not answer yet, so messages to {contact} "
+              "wait until it runs.")
+    return 0
+
+
+def join_by_link(courier, config, link, replace):
+    start = courier.clock()
+    name = join_offer(courier, link, replace=replace)
+    print(f"Paired with {name}. Waiting for {name} to check the way back...", flush=True)
+    seen = lambda: (courier.last_seen(name) or 0) >= start
+    serve_while(courier, config, seen, WAY_BACK_SECONDS)
+    print(f"{name} checked the way back: both ways work." if seen() else
+          f"{name} has not checked the way back yet; keep your courier running so that their messages arrive.")
+    return 0
+
+
 def main(argv=None, *, queue_factory=real_queue):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", type=Path, default=default_config_path())
@@ -90,6 +168,10 @@ def main(argv=None, *, queue_factory=real_queue):
     trust.add_argument("--card", required=True, help="JSON card, or '-' to paste privately in this terminal")
     untrust = sub.add_parser("untrust", help="Revoke contact and cancel unsent messages")
     untrust.add_argument("person")
+    pair = sub.add_parser("pair", help="Pair with another person's courier: print a link, or use theirs")
+    pair.add_argument("link", nargs="?", help="The link the other person's `pair` printed; without it, print one")
+    pair.add_argument("--for", dest="for_person", help="Accept only this person's courier")
+    pair.add_argument("--replace", action="store_true", help="Pair again with someone who is already a contact")
     sub.add_parser("contacts", help="List contact direction permissions and routes, without tokens")
     contact = sub.add_parser("contact", help="Choose the local session a contact's messages go to")
     contact.add_argument("person")
@@ -115,7 +197,7 @@ def main(argv=None, *, queue_factory=real_queue):
             listen_address(args.listen, args.allow_wildcard)
             contact_url(args.url)
             interactive_confirmation(f"Confirm address: listen on {args.listen}, reachable at {args.url}")
-        elif args.command in {"approve", "contact"}:
+        elif args.command in {"approve", "contact", "pair"}:
             require_terminal()  # The code is asked once the queue shows what would change.
         elif (args.command in {"init", "invite", "trust", "untrust", "reject"}
                 or args.command == "service" and args.action in {"install", "uninstall", "start", "stop"}):
@@ -171,7 +253,14 @@ def main(argv=None, *, queue_factory=real_queue):
                 print(f"Listening on {args.listen}, reachable at {args.url}.")
                 print("The courier service was restarted." if restart_service() else
                       "If `courier.py run` is running, restart it to use the new address.")
-                print("Each contact still has your old URL: give them a new card with `invite NAME`.")
+                print("Each contact still has your old URL: pair again with each, using "
+                      "`pair --for NAME --replace` here and their `pair LINK --replace`.")
+            elif args.command == "pair":
+                if args.link is None:
+                    return invite_by_link(courier, config, args.for_person, args.replace)
+                if args.for_person is not None:
+                    raise BridgeError("--for applies when this side prints the link.")
+                return join_by_link(courier, config, args.link, args.replace)
             elif args.command == "contact":
                 from opencode_connect.local.mailbox import canonical
                 target = local_target(canonical(args.to, queue.node))

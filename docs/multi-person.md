@@ -64,9 +64,40 @@ Substitute your authorized VPN interface IP and reachable URL:
 
 ```sh
 python3 -B bin/courier.py init --person alice --listen 192.0.2.10:8765 --url http://192.0.2.10:8765
+python3 -B bin/courier.py pair
+python3 -B bin/courier.py contacts
+```
+
+### Pairing
+
+`pair` connects two couriers in both directions with one command on each side.
+On the first machine it opens a one-time offer for ten minutes and prints a link
+such as `http://192.0.2.10:8765#ABCD-EFGH-JKMN`; the other person runs
+`pair 'LINK'` on theirs. Send the link privately: whoever uses it first becomes a
+contact. `pair --for bob` accepts only bob's courier. To pair again with an
+existing contact, such as after `address`, add `--replace` on both sides.
+
+The 60-bit code after `#` never leaves either machine. Both sides derive a key
+from it with PBKDF2, and each proves it knows the code with an HMAC over its own
+card, so neither stores a card from a courier that does not know the code. A
+wrong code writes nothing. Each card's URL must name the IP its request came
+from, which also keeps a joiner from pointing this courier at another host. The
+inviter's trust stays provisional until the joiner confirms with its new token;
+an offer that lapses or is interrupted without that confirmation is undone, and
+a replaced contact is restored. Finally the inviter checks the way back by asking
+the joiner's courier who it is. `POST /v1/pair` is the only route that needs no
+token: it answers 404 while no offer is open, accepts at most 1 KiB, and is
+throttled in memory per address and in total.
+
+When no courier runs, as when the service is not installed, `pair` serves in
+the foreground while it waits. It warns when the listener is outside VPN ranges,
+because messages travel unencrypted.
+
+The manual alternative exchanges cards out of band:
+
+```sh
 python3 -B bin/courier.py invite bob
 python3 -B bin/courier.py trust bob --card -
-python3 -B bin/courier.py contacts
 ```
 
 The courier, local MCP, and local delivery worker must use the **same**
@@ -109,7 +140,7 @@ SQLite, never restoring an old revoked token from JSON. Do not edit contact maps
 by hand. Change the listener or URL with `address --listen IP:PORT --url URL`: it
 updates the database, then the snapshot, and restarts the service if it runs. If
 it is interrupted, run it again. Contacts keep the old URL until they receive a
-new card. The person name never changes; any other mismatch between the snapshot
+new card, as from `pair --replace`. The person name never changes; any other mismatch between the snapshot
 and the database requires operator review.
 
 `untrust bob` removes the received card, revokes the issued token, and cancels
@@ -213,12 +244,14 @@ OS/user separation if isolation from the local agent is required.
 
 - `POST /v1/messages` accepts exactly `{text, idempotency_key, reply_to?}`. The
   recipient derives the sender from its issued token, never from submitted text.
-  It returns an opaque message ID and `held` (or the existing lifecycle state for
-  an exact retry). Deduplication and held queue insertion share one transaction.
+  It returns an opaque message ID and `held`, `approved` for a direct contact,
+  or the existing lifecycle state for an exact retry. Deduplication and held queue insertion share one transaction.
   Reusing a key for different content returns a conflict, not a second message.
 - `GET /v1/messages/ID` reports only messages owned by the authenticated contact.
   `GET /v1/whoami` reports the configured person and protocol version, not sessions.
-- Authentication occurs before body reads. Socket timeout is three seconds;
+- `POST /v1/pair` and `POST /v1/pair/ack` carry pairing, described above.
+- Authentication occurs before body reads, except on `POST /v1/pair`, which has
+  its own limits. Socket timeout is three seconds;
   bodies and responses are bounded at 64 KiB; message text at 12,000 characters.
   Transfer encoding and duplicate content lengths are rejected. Each authenticated
   contact is limited to 60 requests/minute (including malformed requests after

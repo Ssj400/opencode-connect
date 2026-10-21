@@ -11,7 +11,8 @@ import threading
 import time
 
 from opencode_connect.core import BridgeError
-from opencode_connect.courier.settings import (SOCKET_TIMEOUT, TOKEN, clean_display, person, validate_card,
+from opencode_connect.courier.pairing import PairingMixin
+from opencode_connect.courier.settings import (SOCKET_TIMEOUT, TOKEN, RequestError, clean_display, person, validate_card,
                                                validate_config, write_config)
 from opencode_connect.transports import HttpError, http_json, short_text
 
@@ -38,13 +39,7 @@ def local_target(target):
     return target
 
 
-class RequestError(BridgeError):
-    def __init__(self, status, message):
-        self.status = status
-        super().__init__(message)
-
-
-class Courier:
+class Courier(PairingMixin):
     """Application logic over an injected local queue sharing one SQLite transaction.
 
     The queue exposes db, transaction(), claim(prefix), mark(), release(),
@@ -76,6 +71,11 @@ class Courier:
                     "CREATE TABLE IF NOT EXISTS courier_rate (contact TEXT PRIMARY KEY, start REAL, count INTEGER)",
                     """CREATE TABLE IF NOT EXISTS courier_peers (
                         contact TEXT PRIMARY KEY, last_seen REAL, last_error TEXT, last_error_at REAL)""",
+                    """CREATE TABLE IF NOT EXISTS courier_offer (
+                        id INTEGER PRIMARY KEY CHECK(id=1), key TEXT NOT NULL, expires REAL NOT NULL,
+                        name TEXT, replacing INTEGER NOT NULL,
+                        state TEXT NOT NULL CHECK(state IN ('open', 'provisional', 'confirmed')),
+                        nonce TEXT, contact TEXT, request TEXT, response TEXT, previous TEXT)""",
                     """CREATE TABLE IF NOT EXISTS courier_routes (
                         contact TEXT PRIMARY KEY, target TEXT NOT NULL,
                         mode TEXT NOT NULL CHECK(mode IN ('ask', 'direct')))"""):
@@ -141,26 +141,30 @@ class Courier:
     def untrust(self, name):
         person(name)
         with self.transaction():
-            config = self.settings()
-            config["tokens"].pop(name, None)
-            config["contacts"].pop(name, None)
-            self.save_settings(config)
-            self.db.execute("DELETE FROM courier_routes WHERE contact=?", (name,))
-            # Includes approved-but-pending inbound and pending outbound rows.
-            cancellable = []
-            for (message_id,) in self.db.execute(
-                    "SELECT id FROM courier_inbound WHERE contact=? AND state IN ('held','approved')", (name,)):
-                row = self.queue.get(message_id)
-                if row is not None and row["state"] in {"held", "pending"}:
-                    cancellable.append(message_id)
-            self.queue.cancel_person("person:" + name, outbound=True)
-            for message_id in cancellable:
-                self.db.execute("UPDATE courier_inbound SET state='rejected' WHERE id=?", (message_id,))
-            for (message_id,) in self.db.execute("SELECT id FROM courier_sent WHERE contact=?", (name,)):
-                row = self.queue.get(message_id)
-                if row is not None and row["state"] == "cancelled":
-                    self.db.execute("UPDATE courier_sent SET state='cancelled' WHERE id=?", (message_id,))
+            self._untrust_locked(name)
         self.sync_config()
+
+    def _untrust_locked(self, name):
+        """Revoke both directions and cancel what is unsent; the caller holds the transaction."""
+        config = self.settings()
+        config["tokens"].pop(name, None)
+        config["contacts"].pop(name, None)
+        self.save_settings(config)
+        self.db.execute("DELETE FROM courier_routes WHERE contact=?", (name,))
+        # Includes approved-but-pending inbound and pending outbound rows.
+        cancellable = []
+        for (message_id,) in self.db.execute(
+                "SELECT id FROM courier_inbound WHERE contact=? AND state IN ('held','approved')", (name,)):
+            row = self.queue.get(message_id)
+            if row is not None and row["state"] in {"held", "pending"}:
+                cancellable.append(message_id)
+        self.queue.cancel_person("person:" + name, outbound=True)
+        for message_id in cancellable:
+            self.db.execute("UPDATE courier_inbound SET state='rejected' WHERE id=?", (message_id,))
+        for (message_id,) in self.db.execute("SELECT id FROM courier_sent WHERE contact=?", (name,)):
+            row = self.queue.get(message_id)
+            if row is not None and row["state"] == "cancelled":
+                self.db.execute("UPDATE courier_sent SET state='cancelled' WHERE id=?", (message_id,))
 
     def contacts(self):
         with self.lock:
@@ -327,6 +331,14 @@ class Courier:
         for (message_id,) in rows:
             self.queue.reject_inbound(message_id, reason="Retention expired.")
             self.db.execute("UPDATE courier_inbound SET state='expired' WHERE id=?", (message_id,))
+
+    def tidy(self):
+        """Per-tick upkeep: expire held messages, and a pairing offer that lapsed."""
+        with self.transaction():
+            self.expire()
+            revoked = self._expire_offer_locked()
+        if revoked:
+            self.sync_config()
 
     def inbox(self):
         with self.transaction():

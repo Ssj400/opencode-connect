@@ -1,6 +1,7 @@
 """The courier worker loop, its run lifecycle, and the local relay thread."""
 
 import errno
+import fcntl
 from pathlib import Path
 import signal
 import sqlite3
@@ -14,7 +15,8 @@ from opencode_connect.core import BridgeError
 from opencode_connect.courier.app import Courier
 from opencode_connect.courier.cli import main
 from opencode_connect.courier.settings import write_config
-from opencode_connect.courier.worker import listener, relay_worker, run_courier, serve_until, stop_on_sigterm
+from opencode_connect.courier.worker import (CourierBusy, listener, relay_worker, run_courier, serve_until,
+                                             stop_on_sigterm)
 from opencode_connect.local import mailbox
 from tests.courier.fakes import FakeQueue, configuration
 
@@ -32,6 +34,13 @@ class WorkerLoopTests(unittest.TestCase):
         for name, side_effect in failures.items():
             getattr(worker, name).side_effect = side_effect
         return stop, server, worker, ticks
+
+    def test_each_tick_tidies_and_until_ends_the_loop(self):
+        stop, server, worker, ticks = self.loop(100)
+        done = iter([False, False, True])
+        serve_until(worker, server, stop, until=lambda: next(done))
+        self.assertEqual(len(ticks), 2)
+        self.assertEqual(worker.tidy.call_count, 2)
 
     def test_a_failing_tick_is_logged_and_the_worker_keeps_going(self):
         stop, server, worker, ticks = self.loop(3, send_once=[sqlite3.OperationalError("database is locked"), 0, 0])
@@ -62,9 +71,17 @@ class CourierRunTests(unittest.TestCase):
     def setUp(self):
         folder = tempfile.TemporaryDirectory(prefix="courier-run-")
         self.addCleanup(folder.cleanup)
-        self.queue = FakeQueue(Path(folder.name) / "queue.sqlite3")
+        self.folder = Path(folder.name)
+        self.queue = FakeQueue(self.folder / "queue.sqlite3")
         self.addCleanup(self.queue.db.close)
         self.app = Courier(self.queue, configuration())
+
+    def test_a_second_worker_is_refused_as_busy(self):
+        with (self.folder / "courier.lock").open("a") as held:
+            fcntl.flock(held, fcntl.LOCK_EX)
+            with patch("opencode_connect.courier.worker.CourierServer") as server, self.assertRaises(CourierBusy):
+                run_courier(self.app, "127.0.0.1:8765")
+        server.assert_not_called()
 
     def test_the_relay_runs_beside_the_listener_and_ends_before_the_worker_returns(self):
         started, finished, stopped = threading.Event(), threading.Event(), []
@@ -75,7 +92,8 @@ class CourierRunTests(unittest.TestCase):
             time.sleep(0.05)  # A delivery finishing after the stop request.
             finished.set()
 
-        def serve(app, server, stop, *, healthy):
+        def serve(app, server, stop, *, healthy, until):
+            self.assertFalse(until())
             self.assertTrue(started.wait(2))
             self.assertTrue(healthy())
 

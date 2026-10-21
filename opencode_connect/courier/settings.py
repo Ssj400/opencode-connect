@@ -21,6 +21,14 @@ PERSON = re.compile(r"[a-z][a-z0-9_-]{0,63}\Z")
 TOKEN = re.compile(r"[A-Za-z0-9_-]{43,128}\Z")
 
 
+class RequestError(BridgeError):
+    """A refusal with the HTTP status the listener answers."""
+
+    def __init__(self, status, message):
+        self.status = status
+        super().__init__(message)
+
+
 def person(value):
     if not isinstance(value, str) or not PERSON.fullmatch(value):
         raise BridgeError("Person names must be lowercase ASCII identifiers (1-64 characters).")

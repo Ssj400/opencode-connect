@@ -22,26 +22,30 @@ def log(message):
     print(time.strftime("%Y-%m-%d %H:%M:%S"), message, file=sys.stderr, flush=True)
 
 
+class CourierBusy(BridgeError):
+    """Another worker, such as the service, owns this queue."""
+
+
 def serve_until(courier, server, stop, *, backoff=lambda failures: min(30, 2 ** min(failures, 5)),
-                healthy=lambda: True):
+                healthy=lambda: True, until=lambda: False):
     """One request, one upload, one receipt probe and expiry per tick, until `stop`.
 
     A storage or network error in a tick is logged and retried after a growing
     wait instead of ending the worker. An upload interrupted by the error stays
     claimed, so the worker releases its own claims again: uploads are idempotent.
     `healthy` turning false without a stop request, a relay thread that died,
-    ends the worker so that its service restarts.
+    ends the worker so that its service restarts. `until` turning true, as when a
+    pairing that `pair` serves in the foreground ends, stops it after a tick.
     """
     failures = 0
-    while not stop.is_set():
+    while not stop.is_set() and not until():
         if not healthy() and not stop.is_set():
             raise BridgeError("The local relay stopped unexpectedly; see the error above.")
         try:
             server.handle_request()
             courier.send_once()
             courier.poll_once()
-            with courier.transaction():
-                courier.expire()
+            courier.tidy()
             failures = 0
         except (BridgeError, OSError, sqlite3.Error) as exc:
             failures += 1
@@ -110,7 +114,7 @@ def stop_on_sigterm(stop):
         signal.signal(signal.SIGTERM, previous)
 
 
-def run_courier(courier, listen, *, allow_wildcard=False, stop=None, relay=None):
+def run_courier(courier, listen, *, allow_wildcard=False, stop=None, relay=None, until=lambda: False):
     """Serve until `stop`; `relay(stop)`, when given, runs beside it in a thread.
 
     On stop the relay finishes a delivery in progress and is joined before the
@@ -130,7 +134,7 @@ def run_courier(courier, listen, *, allow_wildcard=False, stop=None, relay=None)
         try:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as exc:
-            raise BridgeError("A courier already owns this queue.") from exc
+            raise CourierBusy("A courier already owns this queue.") from exc
         worker = threading.Thread(target=relay, args=(stop,), name="local-relay") if relay else None
         if worker is not None:
             worker.start()
@@ -143,7 +147,7 @@ def run_courier(courier, listen, *, allow_wildcard=False, stop=None, relay=None)
                 server.timeout = 0.2
                 print(f"Courier listening on {listen}"
                       + (" and delivering this machine's local queue." if worker else "."), flush=True)
-                serve_until(courier, server, stop, healthy=worker.is_alive if worker else lambda: True)
+                serve_until(courier, server, stop, healthy=worker.is_alive if worker else lambda: True, until=until)
         finally:
             stop.set()
             if worker is not None:

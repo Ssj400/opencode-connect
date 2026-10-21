@@ -97,7 +97,8 @@ class CourierConfigurationTests(unittest.TestCase):
                           ["trust", "bob", "--card", "{}"], ["service", "install"], ["service", "uninstall"],
                           ["service", "start"], ["service", "stop"], ["approve"],
                           ["contact", "bob", "--to", "wsl:ses_example", "--direct"],
-                          ["address", "--listen", "192.0.2.20:9000", "--url", "http://192.0.2.20:9000"]):
+                          ["address", "--listen", "192.0.2.20:9000", "--url", "http://192.0.2.20:9000"], ["pair"],
+                          ["pair", "http://192.0.2.20:8765#ABCD-EFGH-JKMN"]):
             # A temporary configuration home: even if a refusal regressed, no unit or
             # configuration could land in the real one.
             with self.subTest(arguments=arguments), tempfile.TemporaryDirectory(prefix="courier-home-") as home, \
