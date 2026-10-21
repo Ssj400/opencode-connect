@@ -386,6 +386,26 @@ class CourierTests(unittest.TestCase):
             self.alice.poll_once()
             self.assertEqual(http.call_count, 2)
 
+    def test_receipts_of_a_removed_contact_do_not_block_polling_others(self):
+        carol = self.make_courier("carol")
+        self.serve(carol)
+        for_carol, for_alice = self.alice.invite("carol"), carol.invite("alice")
+        for_carol["url"], for_alice["url"] = self.alice_url, self.carol_url
+        self.alice.trust("carol", for_alice)
+        carol.trust("alice", for_carol)
+        for target in ("person:bob", "person:carol"):
+            self.alice.queue.enqueue("wsl:ses_example", target, "hello")
+            self.alice.send_once()
+        with self.alice.transaction():  # The removed contact's receipt is first in line.
+            self.alice.db.execute("UPDATE courier_sent SET next_attempt=next_attempt-1 WHERE contact='bob'")
+        self.alice.untrust("bob")
+        self.now += 61
+        with patch("courier.http_json", side_effect=BridgeError("Peer unavailable.")) as http:
+            for _ in range(2):
+                self.alice.poll_once()
+        self.assertEqual(len(http.call_args_list), 1)
+        self.assertTrue(http.call_args.args[0].startswith(self.carol_url + "/v1/messages/"))
+
     def test_contact_rate_and_held_limits(self):
         with patch("courier.RATE", 2):
             self.receive(key="one")

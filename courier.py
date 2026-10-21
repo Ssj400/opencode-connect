@@ -512,6 +512,11 @@ class Courier:
             for message_id, name, remote_id in rows:
                 card = self.settings()["contacts"].get(name)
                 if card is None:
+                    # A removed contact's receipt cannot be polled; move it back so it
+                    # never stays first in line and starves every other receipt.
+                    with self.transaction():
+                        self.db.execute("UPDATE courier_sent SET next_attempt=? WHERE id=?",
+                                        (self.clock() + 60, message_id))
                     continue
                 state = "held"
                 try:
