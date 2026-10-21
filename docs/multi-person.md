@@ -106,7 +106,11 @@ The shared SQLite database is authoritative for token revocations/contact change
 `courier.json` is an atomically replaced private snapshot. After a crash between
 the database commit and snapshot replacement, startup repairs the snapshot from
 SQLite, never restoring an old revoked token from JSON. Do not edit contact maps
-by hand. A mismatch in identity/listener/URL requires explicit operator review.
+by hand. Change the listener or URL with `address --listen IP:PORT --url URL`: it
+updates the database, then the snapshot, and restarts the service if it runs. If
+it is interrupted, run it again. Contacts keep the old URL until they receive a
+new card. The person name never changes; any other mismatch between the snapshot
+and the database requires operator review.
 
 `untrust bob` removes the received card, revokes the issued token, and cancels
 held/approved-but-unsent inbound and pending outbound messages from/to that person

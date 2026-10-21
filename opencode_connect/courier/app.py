@@ -52,7 +52,7 @@ class Courier:
     accessed here. LocalMailbox supplies the operational adapter.
     """
 
-    def __init__(self, queue, config, *, config_path=None, clock=time.time, notify=None):
+    def __init__(self, queue, config, *, config_path=None, clock=time.time, notify=None, readdress=None):
         self.queue = queue
         self.db = queue.db
         self.clock = clock
@@ -82,11 +82,19 @@ class Courier:
                 self.db.execute(statement)
             row = self.db.execute("SELECT data FROM courier_settings WHERE id=1").fetchone()
             if row is None:
-                self.db.execute("INSERT INTO courier_settings VALUES(1,?)", (json.dumps(config),))
+                self.db.execute("INSERT INTO courier_settings VALUES(1,?)", (json.dumps({**config, **(readdress or {})}),))
+            elif readdress is not None:
+                # `address`: the database changes first, then the snapshot below. Either
+                # side may already hold the new address after an interrupted change.
+                saved = validate_config(json.loads(row[0]))
+                if saved["person"] != config["person"]:
+                    raise BridgeError("Courier identity differs from its stored configuration; review required.")
+                self.save_settings(validate_config({**saved, **readdress}))
             else:
                 saved = validate_config(json.loads(row[0]))
                 if any(saved[k] != config[k] for k in ("person", "listen", "url")):
-                    raise BridgeError("Courier identity/listener differs from its stored configuration; review required.")
+                    raise BridgeError("Courier identity/listener differs from its stored configuration; review "
+                                      "required. If an `address` change was interrupted, run it again.")
         # SQLite is authoritative for contacts after initialization. Repair a stale
         # JSON snapshot after a crash; never resurrect a revoked token from it.
         self.sync_config()

@@ -12,9 +12,10 @@ from opencode_connect.core import BridgeError
 from opencode_connect.courier.app import Courier, local_target
 from opencode_connect.courier.doctor import doctor
 from opencode_connect.courier.notify import desktop_notification
-from opencode_connect.courier.service import service_command
-from opencode_connect.courier.settings import (clean_display, default_config_path, interactive_confirmation,
-                                               read_config, require_terminal, write_config)
+from opencode_connect.courier.service import restart_service, service_command
+from opencode_connect.courier.settings import (clean_display, contact_url, default_config_path,
+                                               interactive_confirmation, listen_address, read_config,
+                                               require_terminal, write_config)
 from opencode_connect.courier.worker import relay_worker, run_courier, stop_on_sigterm
 
 
@@ -76,6 +77,10 @@ def main(argv=None, *, queue_factory=real_queue):
     service = sub.add_parser("service", help="Optional systemd user service that runs `run --relay` at login")
     service.add_argument("action", choices=("install", "uninstall", "start", "stop", "status", "logs"),
                          help="install writes the unit and starts it; status and logs only read")
+    address = sub.add_parser("address", help="Change where this courier listens and the URL its cards give")
+    address.add_argument("--listen", required=True)
+    address.add_argument("--url", required=True, help="Reachable HTTP(S) origin included in invitation cards")
+    address.add_argument("--allow-wildcard", action="store_true")
     diagnostic = sub.add_parser("doctor", help="Read-only state checks and bounded authenticated identity probes")
     diagnostic.add_argument("--offline", action="store_true", help="Skip all network probes")
     invite = sub.add_parser("invite", help="Issue a token and display its card once")
@@ -106,7 +111,11 @@ def main(argv=None, *, queue_factory=real_queue):
             findings = doctor(args.config, network=not args.offline)
             print(json.dumps(findings, ensure_ascii=False))
             return 1 if any(row["status"] == "FAIL" for row in findings) else 0
-        if args.command in {"approve", "contact"}:
+        if args.command == "address":
+            listen_address(args.listen, args.allow_wildcard)
+            contact_url(args.url)
+            interactive_confirmation(f"Confirm address: listen on {args.listen}, reachable at {args.url}")
+        elif args.command in {"approve", "contact"}:
             require_terminal()  # The code is asked once the queue shows what would change.
         elif (args.command in {"init", "invite", "trust", "untrust", "reject"}
                 or args.command == "service" and args.action in {"install", "uninstall", "start", "stop"}):
@@ -130,7 +139,8 @@ def main(argv=None, *, queue_factory=real_queue):
         config = read_config(args.config)
         queue = queue_factory(args.config)
         try:
-            courier = Courier(queue, config, config_path=args.config, notify=desktop_notification)
+            readdress = {"listen": args.listen, "url": args.url} if args.command == "address" else None
+            courier = Courier(queue, config, config_path=args.config, notify=desktop_notification, readdress=readdress)
             if args.command == "invite":
                 print(json.dumps(courier.invite(args.person)))
             elif args.command == "trust":
@@ -157,6 +167,11 @@ def main(argv=None, *, queue_factory=real_queue):
                     if not args.watch:
                         break
                     time.sleep(2)
+            elif args.command == "address":
+                print(f"Listening on {args.listen}, reachable at {args.url}.")
+                print("The courier service was restarted." if restart_service() else
+                      "If `courier.py run` is running, restart it to use the new address.")
+                print("Each contact still has your old URL: give them a new card with `invite NAME`.")
             elif args.command == "contact":
                 from opencode_connect.local.mailbox import canonical
                 target = local_target(canonical(args.to, queue.node))

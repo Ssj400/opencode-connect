@@ -101,6 +101,17 @@ def install_service(config_path, environ=os.environ):
     return path, opencode
 
 
+def restart_service():
+    """Restart the installed unit if it is running, so it uses a changed configuration.
+
+    False when this command never installed the unit.
+    """
+    if unit_path().is_symlink() or not unit_path().is_file():
+        return False
+    systemctl("try-restart", SERVICE)
+    return True
+
+
 def uninstall_service():
     """Stop, disable, and remove the unit `install` wrote; never another file."""
     path = unit_path()

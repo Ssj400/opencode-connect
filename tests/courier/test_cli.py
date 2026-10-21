@@ -96,7 +96,8 @@ class CourierConfigurationTests(unittest.TestCase):
         for arguments in (["approve", "example", "--to", "wsl:ses_example"], ["invite", "bob"],
                           ["trust", "bob", "--card", "{}"], ["service", "install"], ["service", "uninstall"],
                           ["service", "start"], ["service", "stop"], ["approve"],
-                          ["contact", "bob", "--to", "wsl:ses_example", "--direct"]):
+                          ["contact", "bob", "--to", "wsl:ses_example", "--direct"],
+                          ["address", "--listen", "192.0.2.20:9000", "--url", "http://192.0.2.20:9000"]):
             # A temporary configuration home: even if a refusal regressed, no unit or
             # configuration could land in the real one.
             with self.subTest(arguments=arguments), tempfile.TemporaryDirectory(prefix="courier-home-") as home, \
@@ -168,3 +169,78 @@ class CourierConfigurationTests(unittest.TestCase):
                                 capture_output=True, text=True, timeout=5)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("consent-gated", result.stdout)
+
+
+class AddressTests(unittest.TestCase):
+    """`address` changes where this courier listens and the URL in its cards, never its person."""
+
+    NEW = ("--listen", "192.0.2.20:9000", "--url", "http://192.0.2.20:9000")
+
+    def setUp(self):
+        folder = tempfile.TemporaryDirectory(prefix="courier-address-")
+        self.addCleanup(folder.cleanup)
+        self.path = Path(folder.name) / "courier.json"
+        self.database = Path(folder.name) / "queue.sqlite3"
+        write_config(self.path, configuration("bob"))
+        queue = FakeQueue(self.database)
+        try:
+            Courier(queue, configuration("bob"), config_path=self.path)
+        finally:
+            queue.db.close()
+
+    def main(self, *arguments):
+        with patch("opencode_connect.courier.cli.interactive_confirmation") as confirm, \
+                patch("opencode_connect.courier.cli.restart_service", return_value=True) as restart, \
+                patch("sys.stdout", new_callable=io.StringIO) as output, \
+                patch("sys.stderr", new_callable=io.StringIO) as errors:
+            result = main(["--config", str(self.path), *arguments], queue_factory=lambda path: FakeQueue(self.database))
+        return result, output.getvalue() + errors.getvalue(), confirm, restart
+
+    def stored(self):
+        queue = FakeQueue(self.database)
+        try:
+            return json.loads(queue.db.execute("SELECT data FROM courier_settings").fetchone()[0])
+        finally:
+            queue.db.close()
+
+    def test_address_changes_listener_and_url_but_never_the_person(self):
+        result, output, confirm, restart = self.main("address", *self.NEW)
+        self.assertEqual(result, 0)
+        self.assertIn("192.0.2.20:9000", confirm.call_args.args[0])
+        for config in (self.stored(), read_config(self.path)):
+            self.assertEqual((config["person"], config["listen"], config["url"]),
+                             ("bob", "192.0.2.20:9000", "http://192.0.2.20:9000"))
+        restart.assert_called_once_with()
+        self.assertIn("restarted", output)
+        self.assertIn("old URL", output)
+
+    def test_an_interrupted_change_is_finished_by_running_it_again(self):
+        with patch("opencode_connect.courier.app.write_config", side_effect=OSError("No space left")):
+            self.assertEqual(self.main("address", *self.NEW)[0], 1)
+        self.assertEqual(self.stored()["listen"], "192.0.2.20:9000")
+        self.assertEqual(read_config(self.path)["listen"], "127.0.0.1:0")
+        result, output, _, _ = self.main("contacts")
+        self.assertEqual(result, 1)
+        self.assertIn("run it again", output)
+        self.assertEqual(self.main("address", *self.NEW)[0], 0)
+        self.assertEqual(read_config(self.path)["listen"], "192.0.2.20:9000")
+        self.assertEqual(self.main("contacts")[0], 0)
+
+    def test_invalid_addresses_are_refused_before_the_code(self):
+        wildcard = str(__import__("ipaddress").ip_address(0)) + ":9000"
+        for arguments in (("--listen", "example:9000", "--url", "http://192.0.2.20:9000"),
+                          ("--listen", wildcard, "--url", "http://192.0.2.20:9000"),
+                          ("--listen", "192.0.2.20:9000", "--url", "http://192.0.2.20:9000/path")):
+            with self.subTest(arguments=arguments):
+                result, _, confirm, restart = self.main("address", *arguments)
+                self.assertEqual(result, 1)
+                confirm.assert_not_called()
+                restart.assert_not_called()
+        self.assertEqual(self.stored()["listen"], "127.0.0.1:0")
+
+    def test_the_person_never_changes(self):
+        write_config(self.path, configuration("carol"))
+        result, output, _, _ = self.main("address", *self.NEW)
+        self.assertEqual(result, 1)
+        self.assertIn("identity differs", output)
+        self.assertEqual((self.stored()["person"], self.stored()["listen"]), ("bob", "127.0.0.1:0"))

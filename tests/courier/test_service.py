@@ -10,7 +10,7 @@ from unittest.mock import Mock, patch
 
 from opencode_connect.core import BridgeError
 from opencode_connect.courier.cli import main
-from opencode_connect.courier.service import (LAUNCHER, SERVICE, install_service, render_unit,
+from opencode_connect.courier.service import (LAUNCHER, SERVICE, install_service, render_unit, restart_service,
                                               service_environment, systemctl, uninstall_service, unit_word)
 from opencode_connect.courier.settings import write_config
 from tests.courier.fakes import configuration
@@ -108,6 +108,15 @@ class ServiceTests(unittest.TestCase):
             uninstall_service()
         run.assert_not_called()
         self.assertTrue(self.unit.exists())
+
+    def test_restart_touches_only_an_installed_unit(self):
+        with self.systemctl() as run:
+            self.assertFalse(restart_service())
+            run.assert_not_called()
+            install_service(self.config)
+            run.reset_mock()
+            self.assertTrue(restart_service())
+        self.assertEqual(run.call_args.args[0], ["systemctl", "--user", "try-restart", SERVICE])
 
     def test_a_systemctl_failure_shows_its_reason(self):
         with self.systemctl(1, "Failed to connect to bus:\nNo medium found\n"), \
