@@ -71,6 +71,10 @@ class FakeQueue:
         result["payload"] = {"text": result.pop("text"), "reply_to": result.pop("reply_to")}
         return result
 
+    def pending_count(self, match):
+        return self.db.execute("SELECT count(*) FROM fake_messages WHERE state='pending' AND substr(target,1,?)=?",
+                               (len(match), match)).fetchone()[0]
+
     def claim(self, match):
         assert self.db.in_transaction and match == "person:"
         row = self.db.execute("SELECT id FROM fake_messages WHERE state='pending' AND substr(target,1,7)=? ORDER BY rowid LIMIT 1",
@@ -385,6 +389,20 @@ class CourierTests(unittest.TestCase):
             self.assertEqual(http.call_count, 2)
             self.alice.poll_once()
             self.assertEqual(http.call_count, 2)
+
+    def test_waiting_uploads_cost_no_writes_until_their_retry_is_due(self):
+        self.assertIsNone(self.alice.send_once())
+        self.alice.queue.enqueue("wsl:ses_example", "person:bob", "hello")
+        with patch("courier.http_json", side_effect=BridgeError("Peer unavailable.")):
+            self.alice.send_once()
+        statements = []
+        self.alice.db.set_trace_callback(statements.append)
+        self.addCleanup(self.alice.db.set_trace_callback, None)
+        for _ in range(5):
+            self.assertIsNone(self.alice.send_once())
+        self.assertEqual([sql for sql in statements if not sql.lstrip().upper().startswith("SELECT")], [])
+        fresh = self.alice.queue.enqueue("wsl:ses_example", "person:bob", "A new message is not held back")
+        self.assertEqual(self.alice.send_once(), fresh)
 
     def test_receipts_of_a_removed_contact_do_not_block_polling_others(self):
         carol = self.make_courier("carol")

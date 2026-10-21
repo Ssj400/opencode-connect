@@ -229,6 +229,16 @@ class LocalMailbox(Mailbox):
             self.db.execute("UPDATE messages SET state='sending' WHERE id=?", (row["id"],))
         return self._decoded(row)
 
+    def pending_count(self, match):
+        """How many pending messages target the namespace `match`, as `claim` matches them.
+
+        Read-only, so a consumer can check for work without taking the write lock.
+        """
+        if not isinstance(match, str) or ":" not in match:
+            raise BridgeError("A count must name an address namespace.")
+        return self.db.execute("SELECT count(*) FROM messages WHERE state='pending' AND substr(target, 1, ?) = ?",
+                               (len(match), match)).fetchone()[0]
+
     @staticmethod
     def _decoded(row):
         result = dict(row)

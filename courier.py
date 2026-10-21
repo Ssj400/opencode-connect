@@ -430,6 +430,12 @@ class Courier:
         # The queue claim and retry metadata commit together. Requests already in
         # flight cannot be retracted by another process revoking this contact.
         with self.lock:
+            # Claiming and releasing uploads that still wait for their retry would write
+            # on every tick: read first, and claim only when something is due.
+            waiting = self.db.execute("SELECT count(*) FROM courier_sent WHERE state='retry' AND next_attempt>?",
+                                      (self.clock(),)).fetchone()[0]
+            if self.queue.pending_count("person:") <= waiting:
+                return None
             with self.transaction():
                 deferred = []
                 while True:

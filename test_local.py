@@ -465,6 +465,19 @@ class CourierQueueApiTests(unittest.TestCase):
                 self.box.reject_inbound(message["id"], reason=reason)
             self.assertEqual(self.box.get(message["id"])["state"], "held")
 
+    def test_pending_count_matches_claims_without_writing(self):
+        self.assertEqual(self.box.pending_count("person:"), 0)
+        self.assertIsNone(self.box.diagnostics()["stored"])  # Counting binds nothing.
+        for target in ("person:alice", "person:bob", "ses_TARGET", self.claude):
+            self.box.enqueue("ses_SOURCE", target, "Count me")
+        self.assertEqual((self.box.pending_count("person:"), self.box.pending_count("claude:"),
+                          self.box.pending_count("local:")), (2, 1, 1))
+        self.box.claim("person:")
+        self.assertEqual(self.box.pending_count("person:"), 1)
+        self.assertFalse(self.box.db.in_transaction)
+        with self.assertRaises(BridgeError):
+            self.box.pending_count("person")
+
     def test_reply_to_names_only_a_delivered_message_from_the_destination(self):
         held = self.hold()
         self.box.approve_inbound(held["id"], "ses_TARGET")
