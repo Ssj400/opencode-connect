@@ -11,6 +11,7 @@ import re
 import shutil
 import sqlite3
 import sys
+import threading
 import time
 import uuid
 
@@ -461,7 +462,10 @@ def deliver_local(job, adapter, *, node=None):
 
 
 def local_relay_once(box, adapter):
-    # Leave pending messages untouched while service discovery or access fails.
+    # Ask the service only when something waits for this node: each call starts
+    # an `opencode api` process. Pending messages stay untouched while it fails.
+    if not box.pending_count(box.node + ":"):
+        return None
     info = adapter.api.call("get", "/api/info")
     if (not isinstance(info, dict) or not isinstance(info.get("version"), str)
             or not info["version"].startswith("2.")):
@@ -469,7 +473,18 @@ def local_relay_once(box, adapter):
     return relay_once(box, lambda job: deliver_local(job, adapter, node=box.node))
 
 
-def relay(box, adapter, *, once=False):
+def print_report(entry):
+    print(json.dumps(entry), flush=True)
+
+
+def relay(box, adapter, *, once=False, stop=None, report=print_report,
+          backoff=lambda failures: min(30, 2 ** min(failures, 5))):
+    """Deliver this node's queued messages, one per second, until `stop` is set.
+
+    An outage is reported once, retried after a growing wait, and its end reported;
+    `once` raises instead. A stop request is honored between deliveries, never during one.
+    """
+    stop = stop or threading.Event()
     path = box.state / "relay.lock"
     if path.is_symlink():
         raise BridgeError("The local relay lock must not be a symlink.")
@@ -478,20 +493,26 @@ def relay(box, adapter, *, once=False):
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as exc:
             raise BridgeError("A local relay is already running.") from exc
-        while True:
+        failures = 0
+        while not stop.is_set():
             try:
                 outcome = local_relay_once(box, adapter)
-            except (BridgeError, OSError) as exc:
+            except (BridgeError, OSError, sqlite3.Error) as exc:
                 if once:
                     raise
-                print(json.dumps({"state": "unavailable", "error": str(exc)}), flush=True)
-                time.sleep(1)
+                failures += 1
+                if failures == 1:
+                    report({"state": "unavailable", "error": str(exc)})
+                stop.wait(backoff(failures))
                 continue
+            if failures:
+                report({"state": "available"})
+                failures = 0
             if outcome:
-                print(json.dumps(outcome), flush=True)
+                report(outcome)
             if once:
                 return
-            time.sleep(1)
+            stop.wait(1)
 
 
 def main():
@@ -505,6 +526,7 @@ def main():
     send.add_argument("--source", required=True)
     send.add_argument("--to", required=True)
     send.add_argument("--text", required=True)
+    send.add_argument("--reply-to", help="ID of the received message this answers.")
     commands.add_parser("status", help="Inspect local queue receipts, not message contents.")
     commands.add_parser("diagnose", help="Compare local node and queue contracts; does not verify service identity.")
     commands.add_parser("migrate", help="Upgrade a version 1 queue bound to this node; rows stay untouched.")
@@ -523,7 +545,7 @@ def main():
         else:
             box = LocalMailbox(state_root(), node=node)
             if args.command == "send":
-                result = box.enqueue(args.source, args.to, args.text)
+                result = box.enqueue(args.source, args.to, args.text, reply_to=args.reply_to)
             elif args.command == "status":
                 result = box.status()
             elif args.command == "diagnose":
@@ -537,7 +559,7 @@ def main():
                 return 0
         print(json.dumps(result, ensure_ascii=False))
         return 0
-    except (BridgeError, OSError) as exc:
+    except (BridgeError, OSError, sqlite3.Error) as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
     except KeyboardInterrupt:

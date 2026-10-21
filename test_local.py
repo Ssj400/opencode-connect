@@ -3,6 +3,7 @@
 import json
 import sqlite3
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -14,6 +15,21 @@ from core import BridgeError, NotSent, relay_once
 from local_bridge import LocalMailbox, deliver_local, local_relay_once, main, relay, session, state_root
 from local_mcp_server import call_tool, handle
 from opencode_adapter import OpenCodeAdapter
+
+
+class BoundedStop(threading.Event):
+    """A stop event that fails a test whose relay loop never ends, before it can
+    spin forever: a relay waits on it once per iteration."""
+
+    def __init__(self, limit=20):
+        super().__init__()
+        self.waits, self.limit = 0, limit
+
+    def wait(self, timeout=None):
+        self.waits += 1
+        if self.waits > self.limit:
+            raise AssertionError("The relay kept looping.")
+        return super().wait(timeout)
 
 
 def candidate(sid="ses_TARGET", title="API review", **extra):
@@ -240,6 +256,47 @@ class LocalQueueTests(unittest.TestCase):
             with self.assertRaises(BridgeError):
                 deliver_local(modified, self.adapter)
         self.api.call.assert_not_called()
+
+    def test_an_idle_relay_never_calls_the_service(self):
+        self.assertIsNone(local_relay_once(self.box, self.adapter))
+        self.box.enqueue("ses_SOURCE", "claude:" + str(uuid.UUID(int=1)), "Not for the OpenCode relay")
+        self.assertIsNone(local_relay_once(self.box, self.adapter))
+        self.api.call.assert_not_called()
+
+    def run_relay(self, *, stop_on):
+        stop, reports = BoundedStop(), []
+
+        def report(entry):
+            reports.append(entry)
+            if entry["state"] == stop_on:
+                stop.set()
+
+        relay(self.box, self.adapter, stop=stop, report=report, backoff=lambda failures: 0)
+        return reports
+
+    def test_relay_reports_an_outage_once_and_its_end(self):
+        self.box.enqueue("ses_SOURCE", "ses_TARGET", "Question")
+        self.api.call.side_effect = [BridgeError("Service offline"), BridgeError("Service offline"),
+                                     {"version": "2.0.0"}, {"data": {"id": "ses_TARGET"}},
+                                     {"data": {"id": "inbox_EXAMPLE"}}]
+        reports = self.run_relay(stop_on="delivered")
+        self.assertEqual([entry["state"] for entry in reports], ["unavailable", "available", "delivered"])
+        self.assertEqual(reports[0]["error"], "Service offline")
+
+    def test_relay_survives_a_database_error(self):
+        with patch.object(self.box, "pending_count", side_effect=[sqlite3.OperationalError("database is locked"), 0]):
+            reports = self.run_relay(stop_on="available")
+        self.assertEqual(reports, [{"state": "unavailable", "error": "database is locked"}, {"state": "available"}])
+
+    def test_cli_send_passes_reply_to(self):
+        with patch("sys.argv", ["local_bridge.py", "send", "--source", "ses_SOURCE", "--to", "person:alice",
+                                "--text", "Answer", "--reply-to", "msg_" + "a" * 32]), \
+                patch("local_bridge.state_root"), patch("local_bridge.LocalMailbox") as mailbox, \
+                patch("local_bridge.local_adapter"), patch("builtins.print"):
+            mailbox.return_value.enqueue.return_value = {"id": "msg_" + "b" * 32, "state": "pending"}
+            self.assertEqual(main(), 0)
+        mailbox.return_value.enqueue.assert_called_once_with("ses_SOURCE", "person:alice", "Answer",
+                                                             reply_to="msg_" + "a" * 32)
 
     def test_single_relay_lock(self):
         import fcntl
