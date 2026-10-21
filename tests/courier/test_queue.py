@@ -15,6 +15,7 @@ from opencode_connect.courier.cli import main
 from opencode_connect.courier.settings import write_config
 from opencode_connect.local import mailbox
 from opencode_connect.local import mcp_server as local_mcp_server
+from opencode_connect.transports import HttpError
 from tests.courier.fakes import configuration
 
 
@@ -95,6 +96,17 @@ class RealQueueCourierTests(unittest.TestCase):
         self.assertEqual(old["state"], "failed")
         self.assertEqual(json.loads(old["result"])["reason"],
                          "Unreachable for 7 days: HTTP request failed (TimeoutError).")
+
+    def test_a_refused_upload_fails_at_once_and_a_busy_peer_is_retried(self):
+        sent = {}
+        for status, state in ((401, "failed"), (429, "pending"), (503, "pending")):
+            with self.subTest(status=status):
+                sent[status] = self.a_box.enqueue("ses_example", "person:bob", f"Answered {status}")["id"]
+                with patch("opencode_connect.courier.app.http_json", side_effect=HttpError(status, "Example reason.")):
+                    self.alice.send_once()
+                self.assertEqual(self.a_box.get(sent[status])["state"], state)
+        self.assertEqual(json.loads(self.a_box.get(sent[401])["result"])["reason"],
+                         "HTTP request failed with status 401: Example reason.")
 
     def test_expiry_and_rejection_use_real_held_transitions(self):
         expired, rejected = self.receive("expires"), self.receive("rejects")
