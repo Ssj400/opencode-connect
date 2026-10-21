@@ -390,6 +390,23 @@ class CourierTests(unittest.TestCase):
             self.alice.poll_once()
             self.assertEqual(http.call_count, 2)
 
+    def peer(self, app, name):
+        row = app.db.execute("SELECT last_seen, last_error, last_error_at FROM courier_peers WHERE contact=?",
+                             (name,)).fetchone()
+        return tuple(row) if row else None
+
+    def test_contacts_record_when_they_last_answered_and_why_they_failed(self):
+        self.assertIsNone(self.peer(self.alice, "bob"))
+        self.alice.queue.enqueue("wsl:ses_example", "person:bob", "hello")
+        with patch("courier.http_json", side_effect=BridgeError("HTTP request failed (Connection\x1b[2JRefusedError).")):
+            self.alice.send_once()
+        self.assertEqual(self.peer(self.alice, "bob"),
+                         (None, "HTTP request failed (Connection[2JRefusedError).", self.now))
+        self.now += 5
+        self.alice.send_once()
+        self.assertEqual(self.peer(self.alice, "bob")[0], self.now)
+        self.assertEqual(self.peer(self.bob, "alice")[0], self.now)  # The receiver saw alice too.
+
     def test_waiting_uploads_cost_no_writes_until_their_retry_is_due(self):
         self.assertIsNone(self.alice.send_once())
         self.alice.queue.enqueue("wsl:ses_example", "person:bob", "hello")
@@ -506,6 +523,21 @@ class CourierTests(unittest.TestCase):
                 http_json(self.bob_url + "/v1/messages", method="POST", headers=self.headers(), data=body)
             self.assertEqual(caught.exception.status, 400)
 
+    def test_http_errors_carry_the_servers_short_reason(self):
+        with self.assertRaises(HttpError) as caught:
+            http_json(self.bob_url + "/v1/whoami", headers={"Authorization": "Bearer " + "X" * 43})
+        self.assertEqual((caught.exception.status, caught.exception.detail), (401, "Authentication required."))
+        self.assertIn("401: Authentication required.", str(caught.exception))
+        with patch("transports.http.client.HTTPConnection") as constructor:
+            response = constructor.return_value.getresponse.return_value
+            response.status = 500
+            response.read.return_value = json.dumps({"error": "bad\x1b[31m‮" + "x" * 300}).encode()
+            with self.assertRaises(HttpError) as caught:
+                http_json("http://192.0.2.10:8765/v1/whoami")
+            response.read.assert_called_once_with(1024)
+        self.assertTrue(caught.exception.detail.startswith("bad[31mx"))
+        self.assertEqual(len(caught.exception.detail), 200)
+
     def test_http_helper_does_not_follow_redirects_or_expose_token(self):
         response = Mock(status=302)
         with patch("transports.http.client.HTTPConnection") as constructor:
@@ -531,6 +563,7 @@ class CourierTests(unittest.TestCase):
             with self.assertRaises(BridgeError) as caught:
                 http_json("http://192.0.2.10/example", headers=self.headers())
             self.assertNotIn(self.bob_card["token"], str(caught.exception))
+            self.assertIn("TimeoutError", str(caught.exception))
             constructor.return_value.request.assert_called_once()
 
     def test_token_rotation_and_bilateral_consent(self):
@@ -782,6 +815,19 @@ class RealQueueCourierTests(unittest.TestCase):
         self.assertEqual(self.b_box.get(reply["id"])["state"], "delivered")
         self.assertFalse(self.a_box.db.in_transaction)
         self.assertFalse(self.b_box.db.in_transaction)
+
+    def test_uploads_fail_after_the_retention_period_and_retry_before_it(self):
+        young = self.a_box.enqueue("ses_example", "person:bob", "Still worth trying")["id"]
+        self.now = time.time()
+        with patch("courier.http_json", side_effect=BridgeError("HTTP request failed (TimeoutError).")):
+            self.alice.send_once()
+            self.assertEqual(self.a_box.get(young)["state"], "pending")
+            self.now = time.time() + courier.RETENTION + 10
+            self.alice.send_once()
+        old = self.a_box.get(young)
+        self.assertEqual(old["state"], "failed")
+        self.assertEqual(json.loads(old["result"])["reason"],
+                         "Unreachable for 7 days: HTTP request failed (TimeoutError).")
 
     def test_expiry_and_rejection_use_real_held_transitions(self):
         expired, rejected = self.receive("expires"), self.receive("rejects")

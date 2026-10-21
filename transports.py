@@ -20,11 +20,31 @@ from core import BridgeError
 
 
 class HttpError(BridgeError):
-    """An HTTP status failure; response bodies and credentials are not diagnostics."""
+    """An HTTP status failure, with the server's short error text when it gave one.
 
-    def __init__(self, status):
+    Credentials are never part of it, and the text is printable and bounded.
+    """
+
+    def __init__(self, status, detail=None):
         self.status = status
-        super().__init__(f"HTTP request failed with status {status}.")
+        self.detail = detail
+        super().__init__(f"HTTP request failed with status {status}" + (f": {detail}" if detail else "."))
+
+
+def short_text(value, limit=200):
+    """Printable characters only, so remote text cannot drive a terminal or a log."""
+    return "".join(character for character in str(value) if character.isprintable())[:limit]
+
+
+def error_detail(response):
+    """The `error` text of a JSON error body, if the server sent a small one."""
+    try:
+        decoded = json.loads(response.read(1024))
+    except (OSError, http.client.HTTPException, ValueError):
+        return None
+    if isinstance(decoded, dict) and isinstance(decoded.get("error"), str):
+        return short_text(decoded["error"]) or None
+    return None
 
 
 def http_json(url, *, method="GET", headers=None, data=None, timeout=5, maximum=65536):
@@ -52,13 +72,15 @@ def http_json(url, *, method="GET", headers=None, data=None, timeout=5, maximum=
         connection.request(method, path, body=body, headers=request_headers)
         response = connection.getresponse()
         if not 200 <= response.status < 300:
-            raise HttpError(response.status)
+            # Error bodies explain a refusal; redirects are not followed or read.
+            raise HttpError(response.status, error_detail(response) if response.status >= 400 else None)
         output = response.read(maximum + 1)
         if len(output) > maximum:
             raise BridgeError("HTTP response exceeds the size limit.")
         return decode_response(output)
     except (OSError, http.client.HTTPException, ValueError) as exc:
-        raise BridgeError("HTTP request failed; no automatic retry was made.") from exc
+        # The kind of failure helps, its text could repeat request content.
+        raise BridgeError(f"HTTP request failed ({type(exc).__name__}).") from exc
     finally:
         connection.close()
 

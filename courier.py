@@ -26,7 +26,7 @@ from urllib.parse import urlsplit
 
 from config import private_directory
 from core import BridgeError
-from transports import HttpError, http_json
+from transports import HttpError, http_json, short_text
 
 MAX_BODY = 64 * 1024
 MAX_TEXT = 12000
@@ -213,7 +213,9 @@ class Courier:
                         id TEXT PRIMARY KEY, contact TEXT NOT NULL, source TEXT NOT NULL,
                         remote_id TEXT, state TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0,
                         next_attempt REAL NOT NULL DEFAULT 0)""",
-                    "CREATE TABLE IF NOT EXISTS courier_rate (contact TEXT PRIMARY KEY, start REAL, count INTEGER)"):
+                    "CREATE TABLE IF NOT EXISTS courier_rate (contact TEXT PRIMARY KEY, start REAL, count INTEGER)",
+                    """CREATE TABLE IF NOT EXISTS courier_peers (
+                        contact TEXT PRIMARY KEY, last_seen REAL, last_error TEXT, last_error_at REAL)"""):
                 self.db.execute(statement)
             row = self.db.execute("SELECT data FROM courier_settings WHERE id=1").fetchone()
             if row is None:
@@ -338,6 +340,7 @@ class Courier:
             raise RequestError(400, "Invalid Unicode content.") from exc
         with self.transaction():
             name = self.authenticate(authorization) if rate_checked else self.check_request(authorization)
+            self.note_peer(name)
             self.expire()
             previous = self.db.execute("SELECT id,payload_hash,state FROM courier_inbound WHERE contact=? AND key=?",
                                        (name, key)).fetchone()
@@ -364,6 +367,7 @@ class Courier:
     def remote_status(self, authorization, message_id, *, rate_checked=False):
         with self.transaction():
             name = self.authenticate(authorization) if rate_checked else self.check_request(authorization)
+            self.note_peer(name)
             self.expire()
             row = self.db.execute("SELECT state FROM courier_inbound WHERE id=? AND contact=?",
                                   (message_id, name)).fetchone()
@@ -373,11 +377,22 @@ class Courier:
 
     def whoami(self, authorization, *, rate_checked=False):
         with self.transaction():
-            if rate_checked:
-                self.authenticate(authorization)
-            else:
-                self.check_request(authorization)
+            name = self.authenticate(authorization) if rate_checked else self.check_request(authorization)
+            self.note_peer(name)
             return {"person": self.settings()["person"], "protocol": 1}
+
+    def note_peer(self, name, error=None):
+        """Record when a contact last answered, or why talking to it last failed.
+
+        The caller holds a transaction. Only the short reason is kept, never text or tokens.
+        """
+        if error is None:
+            self.db.execute("INSERT INTO courier_peers(contact, last_seen) VALUES(?,?) "
+                            "ON CONFLICT(contact) DO UPDATE SET last_seen=excluded.last_seen", (name, self.clock()))
+        else:
+            self.db.execute("INSERT INTO courier_peers(contact, last_error, last_error_at) VALUES(?,?,?) "
+                            "ON CONFLICT(contact) DO UPDATE SET last_error=excluded.last_error, "
+                            "last_error_at=excluded.last_error_at", (name, short_text(error), self.clock()))
 
     def expire(self):
         # Caller holds the shared queue transaction.
@@ -477,8 +492,16 @@ class Courier:
                     if name not in self.settings()["contacts"]:
                         self.queue.mark(job["id"], "cancelled", {"reason": "Contact revoked during request."})
                         self.db.execute("UPDATE courier_sent SET state='cancelled' WHERE id=?", (job["id"],))
-                    elif isinstance(exc, HttpError) and exc.status < 500 and exc.status not in {408, 429}:
+                        return job["id"]
+                    self.note_peer(name, error=exc)
+                    created = job.get("created")
+                    if isinstance(exc, HttpError) and exc.status < 500 and exc.status not in {408, 429}:
                         self.queue.mark(job["id"], "failed", {"reason": str(exc)})
+                        self.db.execute("UPDATE courier_sent SET state='failed' WHERE id=?", (job["id"],))
+                    elif created is not None and self.clock() - created > RETENTION:
+                        # Kept trying as long as an inbound message waits for approval.
+                        self.queue.mark(job["id"], "failed",
+                                        {"reason": f"Unreachable for {RETENTION // 86400} days: {exc}"})
                         self.db.execute("UPDATE courier_sent SET state='failed' WHERE id=?", (job["id"],))
                     else:
                         attempts = self.db.execute("SELECT attempts FROM courier_sent WHERE id=?", (job["id"],)).fetchone()[0] + 1
@@ -491,6 +514,7 @@ class Courier:
                 self.queue.mark(job["id"], "delivered", {"remote_id": result["id"], "state": result["state"]})
                 self.db.execute("UPDATE courier_sent SET remote_id=?,state=?,next_attempt=? WHERE id=?",
                                 (result["id"], result["state"], self.clock() + 60, job["id"]))
+                self.note_peer(name)
             return job["id"]
 
     def recover_outbound(self):
@@ -524,18 +548,19 @@ class Courier:
                         self.db.execute("UPDATE courier_sent SET next_attempt=? WHERE id=?",
                                         (self.clock() + 60, message_id))
                     continue
-                state = "held"
+                state, error = "held", None
                 try:
                     result = http_json(card["url"] + "/v1/messages/" + remote_id,
                                        headers={"Authorization": "Bearer " + card["token"]}, timeout=SOCKET_TIMEOUT)
                     if (isinstance(result, dict) and result.get("id") == remote_id
                             and result.get("state") in {"held", *TERMINAL}):
                         state = result["state"]
-                except BridgeError:
-                    pass
+                except BridgeError as exc:
+                    error = exc
                 with self.transaction():
                     self.db.execute("UPDATE courier_sent SET state=?,next_attempt=? WHERE id=?",
                                     (state, self.clock() + 60, message_id))
+                    self.note_peer(name, error=error)
 
 
 class CourierServer(HTTPServer):
