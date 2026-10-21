@@ -34,6 +34,7 @@ RATE = 60
 HELD_LIMIT = 100
 RETENTION = 7 * 24 * 60 * 60
 SOCKET_TIMEOUT = 3
+DRAIN_SECONDS = 1
 PERSON = re.compile(r"[a-z][a-z0-9_-]{0,63}\Z")
 MESSAGE = re.compile(r"msg_[a-f0-9]{32}\Z")
 TOKEN = re.compile(r"[A-Za-z0-9_-]{43,128}\Z")
@@ -543,6 +544,31 @@ class CourierServer(HTTPServer):
     def handle_error(self, request, client_address):
         # Do not print raw remote requests, addresses, or credentials on errors.
         pass
+
+    def shutdown_request(self, request):
+        self.drain(request)
+        self.close_request(request)
+
+    def drain(self, request):
+        """Read what the client still sends, briefly, before closing.
+
+        A rejection is sent before the body is read; closing with the body still
+        arriving makes the kernel reset the connection, and a proxy such as a Windows
+        port proxy then forwards the reset instead of the status. Returns the bytes read.
+        """
+        drained = 0
+        try:
+            request.shutdown(socket.SHUT_WR)
+            deadline = time.monotonic() + DRAIN_SECONDS
+            while drained <= MAX_BODY and (remaining := deadline - time.monotonic()) > 0:
+                request.settimeout(remaining)
+                chunk = request.recv(4096)
+                if not chunk:
+                    break
+                drained += len(chunk)
+        except OSError:
+            pass
+        return drained
 
 
 class CourierHandler(BaseHTTPRequestHandler):

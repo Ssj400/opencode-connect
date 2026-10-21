@@ -12,6 +12,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from unittest.mock import Mock, patch
 import uuid
@@ -420,6 +421,34 @@ class CourierTests(unittest.TestCase):
             connection.sendall(b"POST /v1/messages HTTP/1.0\r\nContent-Length: 100\r\n\r\n")
             response = connection.recv(4096)
         self.assertIn(b"401", response)
+
+    def test_rejected_request_body_is_read_before_the_connection_closes(self):
+        # Closing with unread bytes makes the kernel send a reset, which a proxy can
+        # forward instead of the response; the server reads late bytes before closing.
+        drained = []
+
+        class Recording(courier.CourierServer):
+            def drain(self, request):
+                drained.append(super().drain(request))
+                return drained[-1]
+
+        server = Recording(self.bob, "127.0.0.1:0")
+        thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True)
+        thread.start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        with socket.create_connection(server.server_address, timeout=2) as connection:
+            connection.sendall(b"POST /v1/messages HTTP/1.0\r\nContent-Length: 20\r\n\r\n")
+            status = b""
+            while chunk := connection.recv(4096):  # Until the server shuts down its side.
+                status += chunk
+            connection.sendall(b"x" * 20)
+            connection.shutdown(socket.SHUT_WR)
+        deadline = time.monotonic() + 3
+        while not drained and time.monotonic() < deadline:
+            time.sleep(0.01)
+        self.assertIn(b"401", status)
+        self.assertEqual(drained, [20])
 
     def test_http_size_transfer_encoding_and_duplicate_lengths_rejected(self):
         for extra, status in ((f"Content-Length: {courier.MAX_BODY + 1}\r\n", 413),
