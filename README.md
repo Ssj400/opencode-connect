@@ -54,7 +54,7 @@ cd opencode-connect
 
    ```bash
    python3 -B -m unittest discover -v
-   python3 -B audit_public.py
+   python3 -B tools/audit_public.py
    ```
 
    These checks run locally without SSH, API calls, or models. Temporary files use
@@ -92,8 +92,8 @@ cd opencode-connect
    Never give the assistant your password or PIN, or save them in project files:
 
    ```bash
-   python3 bridge.py connect
-   python3 bridge.py check
+   python3 bin/bridge.py connect
+   python3 bin/bridge.py check
    ```
 
    `connect` opens an SSH ControlMaster that persists for 10 minutes while idle.
@@ -106,7 +106,7 @@ cd opencode-connect
 4. Deploy files to the configured WSL directory **only with your authorization**:
 
    ```bash
-   python3 deploy.py --install-config
+   python3 bin/deploy.py --install-config
    ```
 
    This copies an explicit allowlist of project files. The flag also copies
@@ -116,7 +116,7 @@ cd opencode-connect
    deleting the deployment manifest. For subsequent code and documentation updates:
 
    ```bash
-   python3 deploy.py
+   python3 bin/deploy.py
    ```
 
    Alternatively, install a clean export manually and create WSL configuration with
@@ -127,7 +127,7 @@ cd opencode-connect
    From that project's directory, replace the absolute path in this example:
 
    ```bash
-   opencode mcp add laptop_bridge -- python3 /srv/opencode-connect/mcp_server.py
+   opencode mcp add laptop_bridge -- python3 /srv/opencode-connect/bin/mcp_server.py
    opencode mcp list
    ```
 
@@ -141,9 +141,9 @@ cd opencode-connect
 6. Review aliases and queues before starting the relay:
 
    ```bash
-   python3 collab.py peers
-   python3 collab.py status
-   python3 collab.py relay
+   python3 bin/collab.py peers
+   python3 bin/collab.py status
+   python3 bin/collab.py relay
    ```
 
    Keep the relay running in the foreground on Linux. Ctrl+C stops the relay,
@@ -159,12 +159,12 @@ requires renewing SSH keys or certificates.
 | Operation | What it changes | When it is needed |
 | --- | --- | --- |
 | `git pull` | Source files in that checkout only | To download published changes; it does not update another machine |
-| `python3 bridge.py connect` | Opens an authenticated reusable SSH connection | When interactive authentication is needed after expiry, restart, or a network change |
-| `python3 bridge.py check` | Checks both local APIs; may start their local services | To verify access without generating responses |
-| `python3 bridge.py doctor` | Nothing; reports each layer and the next step | When messages do not arrive or a step above fails |
-| `python3 deploy.py` | Copies managed code/docs to the configured WSL directory | After code updates, not after every SSH reconnect |
+| `python3 bin/bridge.py connect` | Opens an authenticated reusable SSH connection | When interactive authentication is needed after expiry, restart, or a network change |
+| `python3 bin/bridge.py check` | Checks both local APIs; may start their local services | To verify access without generating responses |
+| `python3 bin/bridge.py doctor` | Nothing; reports each layer and the next step | When messages do not arrive or a step above fails |
+| `python3 bin/deploy.py` | Copies managed code/docs to the configured WSL directory | After code updates, not after every SSH reconnect |
 | `/mcps` → reconnect `laptop_bridge` | Reloads that project's MCP process and tools | After changing MCP code or its installation path, on each affected machine |
-| `python3 collab.py relay` | Starts message delivery | When ready to deliver queued messages; this can trigger model usage |
+| `python3 bin/collab.py relay` | Starts message delivery | When ready to deliver queued messages; this can trigger model usage |
 
 ### Why SSH can need authentication again
 
@@ -183,8 +183,8 @@ configuration, not just an expired connection. Do not ask an agent to handle pas
 From the installation you actually use, run:
 
 ```bash
-python3 bridge.py connect
-python3 bridge.py check
+python3 bin/bridge.py connect
+python3 bin/bridge.py check
 ```
 
 If the host/IP changed, update the appropriate local configuration and independently
@@ -201,10 +201,11 @@ run the runtime unit tests, authenticate if needed, and deploy:
 
 ```bash
 git pull --ff-only
-python3 -B -m unittest test_bridge test_collab test_core test_adapters test_chat
-python3 bridge.py connect
-python3 bridge.py check
-python3 deploy.py
+python3 -B -m unittest tests.test_core tests.test_adapters tests.bridge.test_bridge \
+  tests.bridge.test_collab tests.bridge.test_chat
+python3 bin/bridge.py connect
+python3 bin/bridge.py check
+python3 bin/deploy.py
 ```
 
 The command sequence assumes an existing configured public-edition installation.
@@ -233,9 +234,9 @@ for the operating workflow.
 Equivalent CLI commands, using example aliases:
 
 ```bash
-python3 collab.py send --source linux:ses_SOURCE --to wsl:ses_TARGET --text 'Authorized conversation'
-python3 collab.py send --source linux:ses_SOURCE --to wsl:ses_TARGET --text 'Authorized urgent blocker' --urgent
-python3 collab.py status
+python3 bin/collab.py send --source linux:ses_SOURCE --to wsl:ses_TARGET --text 'Authorized conversation'
+python3 bin/collab.py send --source linux:ses_SOURCE --to wsl:ses_TARGET --text 'Authorized urgent blocker' --urgent
+python3 bin/collab.py status
 ```
 
 Replace these example session IDs with actual addresses; configured shortcuts also work.
@@ -258,7 +259,7 @@ Both sessions must also have explicit entries in `peers`; file eligibility is ch
 at enqueue and delivery. The following command assumes configured `linux`/`wsl` shortcuts:
 
 ```bash
-python3 collab.py send --source linux --to wsl --text 'Approved file' --file example.txt
+python3 bin/collab.py send --source linux --to wsl --text 'Approved file' --file example.txt
 ```
 
 Files arrive at `inbox/<message-id>/<filename>` with SHA256 verification.
@@ -268,7 +269,7 @@ file, not an automatically selected one.
 Optional administration, only with explicit authorization:
 
 ```bash
-python3 collab.py create-session --side wsl --title 'New collaboration'
+python3 bin/collab.py create-session --side wsl --title 'New collaboration'
 ```
 
 This creates a session without generating a response, with `ask` permissions.
@@ -282,7 +283,7 @@ not task completion. If a process dies in `sending`, that message is not claimed
 again after restart. `uncertain` messages are not retried either. Review them
 manually with the user, preserving IDs and state. Never delete SQLite to clear a queue.
 
-Start with `python3 bridge.py doctor` on the Linux coordinator. In order, it checks
+Start with `python3 bin/bridge.py doctor` on the Linux coordinator. In order, it checks
 the configuration, the local OpenCode API, the network path to Windows, the reusable
 SSH connection, the WSL OpenCode API, whether the WSL files match this checkout
 (including Python 3.12+, a private `.state`, and the WSL configuration), the relay,
@@ -332,6 +333,9 @@ The delivery core is independent of harness APIs and operating systems. An agent
 adapter translates messages to OpenCode, while a command transport handles local
 execution or SSH into WSL. Existing CLI commands, configuration, mailboxes, and MCP
 tools are preserved. See [core and adapter boundaries](docs/architecture.md).
+
+The code is the `opencode_connect` package; the commands are thin launchers in `bin/`,
+and `tests/` mirrors the package. See the [repository layout](docs/architecture.md#repository-layout).
 
 This separation prepares future platform and harness adapters; it does not yet
 add Linux-to-Linux, native Windows, macOS, or Claude Code support.

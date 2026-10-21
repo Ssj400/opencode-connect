@@ -35,14 +35,14 @@ Run the offline tests and the audit in a complete checkout first:
 
 ```bash
 python3 -B -m unittest discover -v
-python3 -B audit_public.py
+python3 -B tools/audit_public.py
 ```
 
 In the project where you want messaging, add the server with local scope, which
 applies only to you, in this project:
 
 ```bash
-claude mcp add opencode_connect --scope local -- python3 /srv/opencode-connect/claude_mcp_server.py
+claude mcp add opencode_connect --scope local -- python3 /srv/opencode-connect/bin/claude_mcp_server.py
 ```
 
 Then merge the hooks and deny rules from
@@ -55,7 +55,7 @@ matcher must name the server: `mcp__opencode_connect__.*` for the name above.
 Start a new session, or reconnect the server in `/mcp`, and check that it shows as
 connected. Ask Claude to call `whoami`: it returns `claude:<uuid>` for the current
 session. `/status` lists `Project local settings` among the loaded sources.
-`python3 bridge.py doctor --local` then checks the queue's contract and backlog and
+`python3 bin/bridge.py doctor --local` then checks the queue's contract and backlog and
 whether identity stamps are being consumed, without changing anything or needing
 `routes.json`.
 

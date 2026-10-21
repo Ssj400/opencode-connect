@@ -166,3 +166,21 @@ The trust boundary remains the owner's paired accounts and existing harness
 permissions. Chat permission does not authorize executing received instructions,
 controlling environments, or sharing files. It does not create a harness-enforced
 text-only sandbox or implement cross-person consent agreements.
+
+## Package layout with launchers
+
+Every module was a script in the checkout root, and `courier.py` had passed
+1,100 lines. The code is now the `opencode_connect` package, with one subpackage
+per area: `bridge`, `local`, `courier`, and `claude`. The commands are thin
+launchers in `bin/` that keep their earlier names and arguments, so nothing needs
+`pip install` or `PYTHONPATH`. Tests mirror the package under `tests/`, and the
+export audit moved to `tools/`. No file may exceed 600 lines. The courier is split
+by responsibility: settings, application logic, HTTP server, worker, systemd
+service, doctor, and command line.
+
+Configurations that name a script by path must add `bin/`: MCP servers, Claude
+Code hooks, and the courier's systemd unit. The relay recognizes `bin/collab.py`
+as before. A WSL installation needs a new deployment, which adds the new paths and
+leaves the old root files unused. Runtime state and stored message formats do not
+change. Earlier sections name modules by their flat file names: `core.py` is now
+`opencode_connect/core.py`, and `local_bridge.py` is now `opencode_connect/local/mailbox.py`.

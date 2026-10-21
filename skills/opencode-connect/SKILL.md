@@ -83,20 +83,20 @@ Query `status` once when needed:
 - `uncertain`: it may have arrived; do not retry blindly.
 - `delivered`: accepted by the API, not confirmation that work has finished.
 
-With diagnostic authorization, `python3 bridge.py check` makes small requests
+With diagnostic authorization, `python3 bin/bridge.py check` makes small requests
 without generating responses; it may discover/start the local OpenCode service.
-When the cause is unknown, prefer `python3 bridge.py doctor` on the Linux coordinator:
+When the cause is unknown, prefer `python3 bin/bridge.py doctor` on the Linux coordinator:
 it runs the same kind of read-only checks across configuration, network, SSH, both
 APIs, the WSL installation, the relay, and both queues, and names the next step.
 Report its findings to the user rather than acting on its hints yourself.
-`python3 collab.py peers` and `status` help inspect configuration and queues.
+`python3 bin/collab.py peers` and `status` help inspect configuration and queues.
 Do not start `relay` or `relay --once` as a harmless diagnostic: they may deliver
 pending tasks and consume model quota. SSH authentication belongs in the user's
 terminal. Never read internal credentials, disable SSH verification, or expose the API.
 
 Distinguish reconnecting SSH from deploying code. `connect` authenticates the
 reusable connection; it does not renew keys, install updates, or restart MCP.
-`deploy.py` copies managed files to WSL; a GitHub push alone does not update that
+`bin/deploy.py` copies managed files to WSL; a GitHub push alone does not update that
 installation. Deployment is not needed after every reconnect. After MCP code
 changes, reconnect only the affected server through `/mcps`. See the README's
 reconnection/deployment runbook; do not replace another installed variant blindly.

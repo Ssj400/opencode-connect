@@ -3,12 +3,36 @@
 The public edition separates delivery policy from harness APIs and command transport.
 This refactoring does not add another operating system or harness adapter.
 
+## Repository layout
+
+```text
+bin/                 commands: thin launchers that import the package, nothing else
+opencode_connect/    the package; nothing in it runs as a script
+  core.py config.py transports.py opencode_adapter.py
+  bridge/            Linux -> WSL bridge: bridge, collab, deploy, mcp_server
+  local/             local queue (mailbox) and its MCP server
+  courier/           person-to-person courier: settings, app, server, worker,
+                     service, doctor, cli
+  claude/            Claude Code hook and MCP server
+tests/               mirrors the package; fakes.py files hold shared test doubles
+tools/               maintenance: the export audit
+```
+
+The launchers keep the command names of the earlier flat layout, so
+`python3 courier.py run` became `python3 bin/courier.py run` with the same
+arguments. Runtime files stay at the checkout root: `routes.json`, `.state/`,
+`outgoing/`, and `inbox/`. No file may exceed 600 lines; split it by
+responsibility first. `tests/test_public.py` enforces that limit for every
+exported file.
+
 ## Layers
+
+Module paths are relative to `opencode_connect/`.
 
 ```text
 MCP / CLI
     |
-collab.py: application wiring, configured peers, mailbox storage, Linux relay process
+bridge/collab.py: application wiring, configured peers, mailbox storage, Linux relay process
     |
 core.py: route checks, message envelope, capability checks, one-shot delivery outcomes
     |                                  |
@@ -33,7 +57,7 @@ transports.py: local processes or Windows SSH -> WSL
   implementations retain the existing stdin payload and SSH verification behavior.
 - `bridge.Endpoint` remains a compatibility facade for application wiring and
   deployment; `connect` and `check` keep their existing command-line interface.
-- `collab.py` owns existing configuration, SQLite storage, file staging, and the
+- `bridge/collab.py` owns existing configuration, SQLite storage, file staging, and the
   Linux relay lifecycle. It translates configured `sessionID`/`side` values into
   generic peers and supplies the appropriate adapters. These infrastructure pieces
   are not claimed to be cross-platform yet.
@@ -64,10 +88,10 @@ avoid overwriting, and never execute content. Transfer happens before notificati
 
 ## Diagnostics
 
-`bridge.py doctor` composes read-only probes owned by each layer instead of adding one:
+`bin/bridge.py doctor` composes read-only probes owned by each layer instead of adding one:
 `tcp_probe`, `destination` (`ssh -G`), and `master_alive` (`ssh -O check`) in
 `transports.py`; `probe_api` in `opencode_adapter.py`; `relay_status` and
-`queue_summary` in `collab.py`; and `inspect_installation` in `deploy.py`. The last is a
+`queue_summary` in `bridge/collab.py`; and `inspect_installation` in `bridge/deploy.py`. The last is a
 standalone standard-library function sent to WSL like the deployment receiver, so the
 diagnosis also works when the remote installation is outdated or broken. Doctor never
 opens a writable mailbox, takes the relay lock, sends prompts, or calls mailbox RPC.

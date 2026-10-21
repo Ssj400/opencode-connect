@@ -11,7 +11,7 @@ Use a complete public checkout and run the offline tests first:
 
 ```bash
 python3 -B -m unittest discover -v
-python3 -B audit_public.py
+python3 -B tools/audit_public.py
 ```
 
 In each participating OpenCode project, explicitly add a separate MCP server.
@@ -19,7 +19,7 @@ For interoperability with an existing bridge that names this same session
 namespace `wsl`, configure that canonical node explicitly:
 
 ```bash
-opencode mcp add local_bridge -- env OPENCODE_CONNECT_LOCAL_NODE=wsl python3 /srv/opencode-connect/local_mcp_server.py
+opencode mcp add local_bridge -- env OPENCODE_CONNECT_LOCAL_NODE=wsl python3 /srv/opencode-connect/bin/local_mcp_server.py
 ```
 
 Replace the example absolute path with the actual checkout path. Preserve other
@@ -77,7 +77,7 @@ the target may change between those requests.
 CLI metadata-only search:
 
 ```bash
-python3 -B local_bridge.py find 'API review'
+python3 -B bin/local_bridge.py find 'API review'
 ```
 
 Do not publish search results: real titles, directories and identifiers are private
@@ -91,9 +91,9 @@ to the `Reply address` in received messages. There is no automatic conversation
 loop or transcript forwarding. A separate local worker delivers queued messages:
 
 ```bash
-OPENCODE_CONNECT_LOCAL_NODE=wsl python3 -B local_bridge.py diagnose
-OPENCODE_CONNECT_LOCAL_NODE=wsl python3 -B local_bridge.py status
-OPENCODE_CONNECT_LOCAL_NODE=wsl python3 -B local_bridge.py relay
+OPENCODE_CONNECT_LOCAL_NODE=wsl python3 -B bin/local_bridge.py diagnose
+OPENCODE_CONNECT_LOCAL_NODE=wsl python3 -B bin/local_bridge.py status
+OPENCODE_CONNECT_LOCAL_NODE=wsl python3 -B bin/local_bridge.py relay
 ```
 
 Review pending messages before starting the worker. **Delivery can trigger model
@@ -122,7 +122,7 @@ empty unbound queue reports a null stored contract; diagnosis does not bind it.
 These diagnostics contain private runtime paths: do not publish their output.
 `whoami` validates node configuration and caller metadata, but does not validate
 queue or service identity. Compare diagnostics before starting a worker.
-`python3 bridge.py doctor --local` reads the same contract and the backlog per
+`python3 bin/bridge.py doctor --local` reads the same contract and the backlog per
 consumer through a read-only connection, and needs no `routes.json`.
 
 An older queue containing any messages but no contract is rejected for insertion
@@ -145,14 +145,14 @@ namespace, so the OpenCode worker never claims `claude:` or `person:` rows.
 Remote people can only enter the queue through the courier, never as a source
 passed to `send`.
 
-A version 1 queue is refused until `python3 local_bridge.py migrate` upgrades it.
+A version 1 queue is refused until `python3 bin/local_bridge.py migrate` upgrades it.
 Migration rewrites only the contract version: every row stays untouched, stale
 `sending` rows included, and a queue bound to another node or to an unknown
 version is refused. Version 1 code then refuses the upgraded queue, so upgrade
 every local worker and MCP process together. `diagnose` reports
 `migration_needed`.
 
-`python3 local_bridge.py resolve ID --state delivered|failed|cancelled` records a
+`python3 bin/local_bridge.py resolve ID --state delivered|failed|cancelled` records a
 human-reviewed outcome for a stale `sending` or `uncertain` message. It never resends.
 
 ### Courier interface

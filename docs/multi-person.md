@@ -19,9 +19,9 @@ or modify a personal installation.
 Run offline tests with Python 3.12 or newer:
 
 ```sh
-python3 -B -m unittest test_courier -v
+python3 -B -m unittest discover -v -s tests/courier -t .
 python3 -B -m unittest discover -v
-python3 -B audit_public.py
+python3 -B tools/audit_public.py
 ```
 
 ## Trust and network boundaries
@@ -62,10 +62,10 @@ The following are setup examples, not permission to activate a listener.
 Substitute your authorized VPN interface IP and reachable URL:
 
 ```sh
-python3 -B courier.py init --person alice --listen 192.0.2.10:8765 --url http://192.0.2.10:8765
-python3 -B courier.py invite bob
-python3 -B courier.py trust bob --card -
-python3 -B courier.py contacts
+python3 -B bin/courier.py init --person alice --listen 192.0.2.10:8765 --url http://192.0.2.10:8765
+python3 -B bin/courier.py invite bob
+python3 -B bin/courier.py trust bob --card -
+python3 -B bin/courier.py contacts
 ```
 
 The courier, local MCP, and local delivery worker must use the **same**
@@ -82,8 +82,8 @@ review their state, and explicitly migrate as documented in
 queue binds to v2 without touching existing state. Start consumers explicitly:
 
 ```sh
-python3 -B courier.py run
-python3 -B local_bridge.py relay
+python3 -B bin/courier.py run
+python3 -B bin/local_bridge.py relay
 ```
 
 These are separate foreground processes in separate terminals, sharing the above
@@ -116,11 +116,11 @@ the previous token stops authenticating. Contact lists never display tokens.
 ## Inbox and approval
 
 ```sh
-python3 -B courier.py inbox
-python3 -B courier.py inbox --watch
-python3 -B courier.py approve MESSAGE_ID --to wsl:ses_EXAMPLE
-python3 -B courier.py reject MESSAGE_ID
-python3 -B courier.py untrust bob
+python3 -B bin/courier.py inbox
+python3 -B bin/courier.py inbox --watch
+python3 -B bin/courier.py approve MESSAGE_ID --to wsl:ses_EXAMPLE
+python3 -B bin/courier.py reject MESSAGE_ID
+python3 -B bin/courier.py untrust bob
 ```
 
 `init`, `invite`, `trust`, `untrust`, `approve`, and `reject` require interactive
@@ -258,8 +258,8 @@ racing an upload.
 ## Read-only diagnostics
 
 ```sh
-python3 -B courier.py doctor
-python3 -B courier.py doctor --offline
+python3 -B bin/courier.py doctor
+python3 -B bin/courier.py doctor --offline
 ```
 
 Doctor validates private configuration, database and existing SQLite sidecar

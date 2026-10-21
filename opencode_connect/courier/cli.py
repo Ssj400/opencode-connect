@@ -1,0 +1,135 @@
+"""Opt-in, consent-gated person-to-person text courier over a private LAN or VPN."""
+
+import argparse
+import json
+from pathlib import Path
+import sqlite3
+import sys
+import threading
+import time
+
+from opencode_connect.core import BridgeError
+from opencode_connect.courier.app import Courier
+from opencode_connect.courier.doctor import doctor
+from opencode_connect.courier.service import service_command
+from opencode_connect.courier.settings import (clean_display, default_config_path, interactive_confirmation,
+                                               read_config, write_config)
+from opencode_connect.courier.worker import relay_worker, run_courier, stop_on_sigterm
+
+
+def real_queue(config_path):
+    from opencode_connect.local.mailbox import LocalMailbox, state_root
+    return LocalMailbox(state_root())
+
+
+def main(argv=None, *, queue_factory=real_queue):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--config", type=Path, default=default_config_path())
+    sub = parser.add_subparsers(dest="command", required=True)
+    init = sub.add_parser("init", help="Create a private courier identity interactively")
+    init.add_argument("--person", required=True)
+    init.add_argument("--listen", required=True)
+    init.add_argument("--url", required=True, help="Reachable HTTP(S) origin included in invitation cards")
+    run = sub.add_parser("run", help="Serve inbound messages and process outbound person messages")
+    run.add_argument("--allow-wildcard", action="store_true")
+    run.add_argument("--relay", action="store_true",
+                     help="Also deliver this machine's local queue, instead of a separate bin/local_bridge.py relay")
+    service = sub.add_parser("service", help="Optional systemd user service that runs `run --relay` at login")
+    service.add_argument("action", choices=("install", "uninstall", "start", "stop", "status", "logs"),
+                         help="install writes the unit and starts it; status and logs only read")
+    diagnostic = sub.add_parser("doctor", help="Read-only state checks and bounded authenticated identity probes")
+    diagnostic.add_argument("--offline", action="store_true", help="Skip all network probes")
+    invite = sub.add_parser("invite", help="Issue a token and display its card once")
+    invite.add_argument("person")
+    trust = sub.add_parser("trust", help="Accept an independently received contact card")
+    trust.add_argument("person")
+    trust.add_argument("--card", required=True, help="JSON card, or '-' to paste privately in this terminal")
+    untrust = sub.add_parser("untrust", help="Revoke contact and cancel unsent messages")
+    untrust.add_argument("person")
+    sub.add_parser("contacts", help="List contact direction permissions, without tokens")
+    inbox = sub.add_parser("inbox", help="Show sanitized held messages without approving them")
+    inbox.add_argument("--watch", action="store_true")
+    approve = sub.add_parser("approve", help="Release one held message to an explicit local session")
+    approve.add_argument("id")
+    approve.add_argument("--to", required=True)
+    reject = sub.add_parser("reject", help="Reject one held message")
+    reject.add_argument("id")
+    args = parser.parse_args(argv)
+    try:
+        if args.command == "doctor":
+            findings = doctor(args.config, network=not args.offline)
+            print(json.dumps(findings, ensure_ascii=False))
+            return 1 if any(row["status"] == "FAIL" for row in findings) else 0
+        if (args.command in {"init", "invite", "trust", "untrust", "approve", "reject"}
+                or args.command == "service" and args.action in {"install", "uninstall", "start", "stop"}):
+            detail = args.command
+            if args.command == "approve":
+                detail += f" {args.id} to {args.to}"
+            elif args.command == "reject":
+                detail += f" {args.id}"
+            elif args.command == "service":
+                detail += " " + args.action
+            elif hasattr(args, "person"):
+                detail += " " + args.person
+            interactive_confirmation("Confirm " + detail)
+        if args.command == "init":
+            if args.config.exists() or args.config.is_symlink():
+                raise BridgeError("Courier configuration already exists; it was not overwritten.")
+            config = {"person": args.person, "listen": args.listen, "url": args.url, "tokens": {}, "contacts": {}}
+            write_config(args.config, config)
+            print("Private courier configuration created; no listener was started.")
+            return 0
+        if args.command == "service":
+            return service_command(args.action, args.config)
+        config = read_config(args.config)
+        queue = queue_factory(args.config)
+        try:
+            courier = Courier(queue, config, config_path=args.config)
+            if args.command == "invite":
+                print(json.dumps(courier.invite(args.person)))
+            elif args.command == "trust":
+                if args.card == "-":
+                    import getpass
+                    raw = getpass.getpass("Paste contact card (hidden): ")
+                else:
+                    raw = args.card
+                try:
+                    card = json.loads(raw)
+                except (ValueError, UnicodeError) as exc:
+                    raise BridgeError("Invalid contact card JSON.") from exc
+                courier.trust(args.person, card)
+                print("Contact trusted.")
+            elif args.command == "untrust":
+                courier.untrust(args.person)
+                print("Contact revoked; unsent messages cancelled.")
+            elif args.command == "contacts":
+                print(json.dumps(courier.contacts()))
+            elif args.command == "inbox":
+                while True:
+                    for row in courier.inbox():
+                        print(json.dumps(row, ensure_ascii=False), flush=True)
+                    if not args.watch:
+                        break
+                    time.sleep(2)
+            elif args.command == "approve":
+                courier.approve(args.id, args.to)
+                print("Message approved for local delivery; not proof of session reception.")
+            elif args.command == "reject":
+                courier.reject(args.id)
+                print("Message rejected.")
+            elif args.command == "run":
+                stop = threading.Event()
+                relay = (lambda event: relay_worker(event, node=queue.node)) if args.relay else None
+                with stop_on_sigterm(stop):
+                    run_courier(courier, config["listen"], allow_wildcard=args.allow_wildcard,
+                                stop=stop, relay=relay)
+        finally:
+            queue.db.close()
+        return 0
+    except (BridgeError, OSError, sqlite3.Error) as exc:
+        # Avoid disclosing config content or credentials through parser tracebacks.
+        message = str(exc) if isinstance(exc, BridgeError) else "Courier storage or listener unavailable."
+        print(clean_display(message), file=sys.stderr)
+        return 1
+    except (KeyboardInterrupt, EOFError):
+        return 130
