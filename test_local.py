@@ -12,7 +12,7 @@ from urllib.parse import parse_qs, urlsplit
 import uuid
 
 from core import BridgeError, NotSent, relay_once
-from local_bridge import LocalMailbox, deliver_local, local_relay_once, main, relay, session, state_root
+from local_bridge import LocalMailbox, RelayBusy, deliver_local, local_relay_once, main, relay, session, state_root
 from local_mcp_server import call_tool, handle
 from opencode_adapter import OpenCodeAdapter
 
@@ -302,7 +302,7 @@ class LocalQueueTests(unittest.TestCase):
         import fcntl
         with (self.box.state / "relay.lock").open("a+") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            with self.assertRaises(BridgeError):
+            with self.assertRaises(RelayBusy):  # The courier waits for that relay.
                 relay(self.box, self.adapter, once=True)
         self.api.call.assert_not_called()
 

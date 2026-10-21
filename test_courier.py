@@ -1,11 +1,14 @@
 """Deterministic offline courier tests; no harness, relay, VPN, or real credentials."""
 
 from contextlib import contextmanager
+import errno
 import hashlib
 import http.client
 import io
 import json
+import os
 from pathlib import Path
+import signal
 import socket
 import sqlite3
 import subprocess
@@ -611,6 +614,264 @@ class WorkerLoopTests(unittest.TestCase):
         with patch("courier.log"), self.assertRaises(ValueError):
             courier.serve_until(worker, server, stop, backoff=lambda failures: 0)
 
+    def test_a_relay_that_ended_on_its_own_ends_the_worker(self):
+        stop, server, worker, _ = self.loop(5)
+        with self.assertRaisesRegex(BridgeError, "local relay stopped"):
+            courier.serve_until(worker, server, stop, healthy=lambda: False)
+        server.handle_request.assert_not_called()
+        stop.set()  # A relay that ended because of a stop request is not a failure.
+        courier.serve_until(worker, server, stop, healthy=lambda: False)
+
+
+class CourierRunTests(unittest.TestCase):
+    """The worker's lifecycle, with the listener replaced: no port is opened."""
+
+    def setUp(self):
+        folder = tempfile.TemporaryDirectory(prefix="courier-run-")
+        self.addCleanup(folder.cleanup)
+        self.queue = FakeQueue(Path(folder.name) / "queue.sqlite3")
+        self.addCleanup(self.queue.db.close)
+        self.app = courier.Courier(self.queue, configuration())
+
+    def test_the_relay_runs_beside_the_listener_and_ends_before_the_worker_returns(self):
+        started, finished, stopped = threading.Event(), threading.Event(), []
+
+        def relay(stop):
+            started.set()
+            stopped.append(stop.wait(2))
+            time.sleep(0.05)  # A delivery finishing after the stop request.
+            finished.set()
+
+        def serve(app, server, stop, *, healthy):
+            self.assertTrue(started.wait(2))
+            self.assertTrue(healthy())
+
+        with patch("courier.CourierServer"), patch("courier.serve_until", side_effect=serve), \
+                patch("builtins.print") as banner:
+            courier.run_courier(self.app, "127.0.0.1:8765", relay=relay)
+        self.assertEqual(stopped, [True])
+        self.assertTrue(finished.is_set())  # The caller closes the queue only after this.
+        self.assertIn("delivering this machine's local queue", banner.call_args.args[0])
+
+    def test_a_stop_before_the_address_is_assigned_ends_cleanly(self):
+        stop, relayed = threading.Event(), []
+        with patch("courier.listener", side_effect=lambda *args, **kwargs: stop.set()), \
+                patch("courier.serve_until") as serve:
+            courier.run_courier(self.app, "127.0.0.1:8765", stop=stop, relay=relayed.append)
+        serve.assert_not_called()
+        self.assertEqual(relayed, [stop])
+
+    def test_the_listener_waits_for_its_address_to_be_assigned(self):
+        stop = threading.Event()
+        unassigned = OSError(errno.EADDRNOTAVAIL, "Cannot assign requested address")
+        with patch("courier.CourierServer", side_effect=[unassigned, unassigned, "server"]), \
+                patch("courier.log") as log:
+            self.assertEqual(courier.listener(self.app, "127.0.0.1:8765", stop, retry=0), "server")
+        log.assert_called_once()
+        self.assertIn("not assigned yet", log.call_args.args[0])
+        stop.set()
+        with patch("courier.CourierServer", side_effect=[unassigned]):
+            self.assertIsNone(courier.listener(self.app, "127.0.0.1:8765", stop, retry=0))
+
+    def test_a_port_in_use_is_not_retried(self):
+        with patch("courier.CourierServer", side_effect=[OSError(errno.EADDRINUSE, "Address in use")]), \
+                self.assertRaises(OSError):
+            courier.listener(self.app, "127.0.0.1:8765", threading.Event(), retry=0)
+
+    def test_sigterm_requests_a_clean_stop_and_the_handler_is_restored(self):
+        stop, before = threading.Event(), signal.getsignal(signal.SIGTERM)
+        with courier.stop_on_sigterm(stop):
+            signal.raise_signal(signal.SIGTERM)
+            self.assertTrue(stop.is_set())
+        self.assertIs(signal.getsignal(signal.SIGTERM), before)
+
+    def test_cli_run_relay_gives_the_relay_this_queue_node(self):
+        with tempfile.TemporaryDirectory(prefix="courier-run-cli-") as folder:
+            path = Path(folder) / "courier.json"
+            courier.write_config(path, configuration())
+            self.queue.node = "linux"
+            with patch("courier.run_courier") as run, patch("courier.relay_worker") as worker:
+                self.assertEqual(courier.main(["--config", str(path), "run", "--relay"],
+                                              queue_factory=lambda config_path: self.queue), 0)
+                event = run.call_args.kwargs["stop"]
+                run.call_args.kwargs["relay"](event)
+            worker.assert_called_once_with(event, node="linux")
+
+
+class RelayWorkerTests(unittest.TestCase):
+    def test_a_separate_relay_is_waited_for_and_reported_once(self):
+        stop, boxes = threading.Event(), []
+
+        def open_box():
+            boxes.append(Mock())
+            return boxes[-1]
+
+        calls = []
+
+        def relay(box, adapter, **kwargs):
+            calls.append(box)
+            if len(calls) < 3:
+                raise local_bridge.RelayBusy("A local relay is already running.")
+            stop.set()
+
+        with patch("local_bridge.relay", side_effect=relay), patch("courier.log") as log:
+            courier.relay_worker(stop, open_box=open_box, adapter=Mock(), retry=0)
+        self.assertEqual(calls, boxes)
+        log.assert_called_once()
+        self.assertIn("Another local relay", log.call_args.args[0])
+        for box in boxes:
+            box.db.close.assert_called_once()
+
+    def test_a_queue_that_cannot_open_is_retried(self):
+        stop, box = threading.Event(), Mock()
+        with patch("local_bridge.relay", side_effect=lambda *a, **k: stop.set()), patch("courier.log") as log:
+            courier.relay_worker(stop, open_box=Mock(side_effect=[BridgeError("Queue contract differs."), box]),
+                                 adapter=Mock(), retry=0)
+        self.assertIn("Queue contract differs.", log.call_args.args[0])
+        box.db.close.assert_called_once()
+
+    def test_a_stop_during_a_delivery_leaves_nothing_sending(self):
+        with tempfile.TemporaryDirectory(prefix="courier-relay-") as folder:
+            root, stop, failures = Path(folder), threading.Event(), []
+            box = local_bridge.LocalMailbox(root, node="linux")
+            message = box.enqueue("ses_example", "linux:ses_target", "hello")["id"]
+            box.db.close()
+            adapter = Mock(supported_deliveries=frozenset({"queue"}))
+            adapter.api.call.side_effect = lambda method, path: (
+                {"version": "2.0.0"} if path == "/api/info" else {"data": {"id": "ses_target", "time": {}}})
+
+            def accept(*args, **kwargs):
+                stop.set()  # Stop requested while the delivery is in progress.
+                return "accepted_example"
+
+            adapter.send_message.side_effect = accept
+
+            def worker():
+                try:  # The mailbox opens in this thread: SQLite connections stay in theirs.
+                    courier.relay_worker(stop, open_box=lambda: local_bridge.LocalMailbox(root, node="linux"),
+                                         adapter=adapter, retry=0)
+                except BaseException as exc:
+                    failures.append(exc)
+
+            thread = threading.Thread(target=worker)
+            with patch("courier.log"):
+                thread.start()
+                thread.join(10)
+            self.assertFalse(thread.is_alive())
+            self.assertEqual(failures, [])
+            box = local_bridge.LocalMailbox(root, node="linux")
+            try:
+                self.assertEqual(box.get(message)["state"], "delivered")
+            finally:
+                box.db.close()
+
+
+class ServiceTests(unittest.TestCase):
+    """The systemd user unit, with systemctl replaced and a temporary XDG_CONFIG_HOME."""
+
+    def setUp(self):
+        folder = tempfile.TemporaryDirectory(prefix="courier-service-")
+        self.addCleanup(folder.cleanup)
+        self.home = Path(folder.name)
+        environment = patch.dict(os.environ, {"XDG_CONFIG_HOME": str(self.home)})
+        environment.start()
+        self.addCleanup(environment.stop)
+        self.config = self.home / "opencode-connect/courier.json"
+        courier.write_config(self.config, configuration())
+        self.unit = self.home / "systemd/user" / courier.SERVICE
+
+    def systemctl(self, returncode=0, stderr=""):
+        return patch("courier.subprocess.run", return_value=subprocess.CompletedProcess(
+            [], returncode, stdout="", stderr=stderr))
+
+    def test_the_unit_runs_the_relay_with_absolute_paths_and_stops_cleanly(self):
+        text = courier.render_unit("/opt/python 3/bin/python3", "/srv/connect/courier.py", self.config,
+                                   {"PATH": "/opt/opencode/bin:/usr/bin", "OPENCODE_CONNECT_LOCAL_NODE": "linux"})
+        lines = text.splitlines()
+        self.assertIn(f'ExecStart="/opt/python 3/bin/python3" "-B" "/srv/connect/courier.py" '
+                      f'"--config" "{self.config}" "run" "--relay"', lines)
+        self.assertIn('Environment="PATH=/opt/opencode/bin:/usr/bin"', lines)
+        self.assertIn('Environment="OPENCODE_CONNECT_LOCAL_NODE=linux"', lines)
+        for setting in ("Restart=on-failure", "RestartSec=5", "StartLimitIntervalSec=0", "KillMode=mixed",
+                        "TimeoutStopSec=45", "WantedBy=default.target"):
+            self.assertIn(setting, lines)
+        with self.assertRaises(BridgeError):
+            courier.render_unit("python3", "/srv/connect/courier.py", self.config, {})
+
+    def test_unit_words_cannot_expand_or_break_out(self):
+        self.assertEqual(courier.unit_word('/a "b" \\c 100% $HOME', command=True), r'"/a \"b\" \\c 100%% $$HOME"')
+        self.assertEqual(courier.unit_word("KEY=50% $x"), '"KEY=50%% $x"')
+        for value in ("/a\nExecStartPre=/bin/false", "/a\tb"):
+            with self.subTest(value=value), self.assertRaises(BridgeError):
+                courier.unit_word(value)
+
+    def test_the_environment_keeps_this_terminal_opencode_and_queue(self):
+        environ = {"PATH": "/opt/opencode/bin:/usr/bin", "OPENCODE_CONNECT_LOCAL_STATE_HOME": "/srv/state",
+                   "XDG_STATE_HOME": "", "HOME": "/home/example", "SECRET_TOKEN": "x"}
+        with patch("courier.shutil.which", return_value="/opt/opencode/bin/opencode") as which:
+            environment, opencode = courier.service_environment(environ)
+        which.assert_called_once_with("opencode", path="/opt/opencode/bin:/usr/bin")
+        self.assertEqual(opencode, "/opt/opencode/bin/opencode")
+        self.assertEqual(environment, {"PATH": "/opt/opencode/bin:/usr/local/bin:/usr/bin:/bin",
+                                       "OPENCODE_CONNECT_LOCAL_STATE_HOME": "/srv/state"})
+        with patch("courier.shutil.which", return_value=None):
+            self.assertEqual(courier.service_environment(environ)[0]["PATH"], "/usr/local/bin:/usr/bin:/bin")
+
+    def test_install_writes_the_unit_once_then_enables_it(self):
+        with self.systemctl() as run, patch("courier.shutil.which", return_value="/opt/opencode/bin/opencode"):
+            path, opencode = courier.install_service(self.config)
+            self.assertEqual(path, self.unit)
+            self.assertEqual(self.unit.stat().st_mode & 0o777, 0o600)
+            environment = courier.service_environment(os.environ)[0]
+            self.assertEqual(self.unit.read_text(), courier.render_unit(
+                sys.executable, Path(courier.__file__).resolve(), self.config, environment))
+            self.assertEqual([call.args[0] for call in run.call_args_list], [
+                ["systemctl", "--user", "daemon-reload"], ["systemctl", "--user", "enable", "--now", courier.SERVICE]])
+            courier.install_service(self.config)  # Same unit: enabling again is harmless.
+
+    def test_install_never_overwrites_a_different_unit(self):
+        self.unit.parent.mkdir(parents=True)
+        self.unit.write_text("[Service]\nExecStart=/bin/true\n")
+        with self.systemctl() as run, self.assertRaisesRegex(BridgeError, "not overwritten"):
+            courier.install_service(self.config)
+        run.assert_not_called()
+        self.assertEqual(self.unit.read_text(), "[Service]\nExecStart=/bin/true\n")
+
+    def test_install_requires_a_readable_configuration(self):
+        self.config.unlink()
+        with self.systemctl() as run, self.assertRaises(BridgeError):
+            courier.install_service(self.config)
+        run.assert_not_called()
+        self.assertFalse(self.unit.exists())
+
+    def test_uninstall_removes_only_its_own_unit(self):
+        with self.systemctl() as run:
+            courier.install_service(self.config)
+            run.reset_mock()
+            self.assertEqual(courier.uninstall_service(), self.unit)
+        self.assertFalse(self.unit.exists())
+        self.assertEqual([call.args[0] for call in run.call_args_list], [
+            ["systemctl", "--user", "disable", "--now", courier.SERVICE], ["systemctl", "--user", "daemon-reload"]])
+        self.unit.write_text("[Service]\nExecStart=/bin/true\n")
+        with self.systemctl() as run, self.assertRaisesRegex(BridgeError, "left untouched"):
+            courier.uninstall_service()
+        run.assert_not_called()
+        self.assertTrue(self.unit.exists())
+
+    def test_a_systemctl_failure_shows_its_reason(self):
+        with self.systemctl(1, "Failed to connect to bus:\nNo medium found\n"), \
+                self.assertRaisesRegex(BridgeError, "Failed to connect to bus: No medium found"):
+            courier.systemctl("daemon-reload")
+
+    def test_status_and_logs_need_neither_a_terminal_nor_the_configuration(self):
+        for action, program in (("status", "systemctl"), ("logs", "journalctl")):
+            with self.subTest(action=action), self.systemctl(3) as run, patch("courier.read_config") as read, \
+                    patch("sys.stdin.isatty", return_value=False):
+                self.assertEqual(courier.main(["service", action], queue_factory=Mock()), 3)
+                self.assertEqual(run.call_args.args[0][0], program)
+                self.assertIn(courier.SERVICE, run.call_args.args[0])
+                read.assert_not_called()
+
 
 class CourierConfigurationTests(unittest.TestCase):
     def test_wildcards_require_explicit_flag(self):
@@ -685,11 +946,14 @@ class CourierConfigurationTests(unittest.TestCase):
 
     def test_cli_noninteractive_approval_denied_before_config_or_queue(self):
         for arguments in (["approve", "example", "--to", "wsl:ses_example"], ["invite", "bob"],
-                          ["trust", "bob", "--card", "{}"]):
+                          ["trust", "bob", "--card", "{}"], ["service", "install"], ["service", "uninstall"],
+                          ["service", "start"], ["service", "stop"]):
             with self.subTest(arguments=arguments), patch("sys.stdin.isatty", return_value=False), \
-                    patch("sys.stderr", new_callable=io.StringIO), patch("courier.read_config") as read:
+                    patch("sys.stderr", new_callable=io.StringIO), patch("courier.read_config") as read, \
+                    patch("courier.subprocess.run") as run:
                 self.assertEqual(courier.main(arguments, queue_factory=Mock()), 1)
                 read.assert_not_called()
+                run.assert_not_called()
 
     def test_real_queue_factory_uses_local_mailbox_and_unchanged_environment(self):
         with tempfile.TemporaryDirectory(prefix="courier-cli-") as folder:

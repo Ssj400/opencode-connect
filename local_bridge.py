@@ -473,6 +473,10 @@ def local_relay_once(box, adapter):
     return relay_once(box, lambda job: deliver_local(job, adapter, node=box.node))
 
 
+class RelayBusy(BridgeError):
+    """Another relay owns this queue's lock."""
+
+
 def print_report(entry):
     print(json.dumps(entry), flush=True)
 
@@ -492,7 +496,7 @@ def relay(box, adapter, *, once=False, stop=None, report=print_report,
         try:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as exc:
-            raise BridgeError("A local relay is already running.") from exc
+            raise RelayBusy("A local relay is already running.") from exc
         failures = 0
         while not stop.is_set():
             try:

@@ -3,6 +3,7 @@
 
 import argparse
 from contextlib import contextmanager
+import errno
 import fcntl
 import hashlib
 import hmac
@@ -13,10 +14,13 @@ import os
 from pathlib import Path
 import re
 import secrets
+import shutil
+import signal
 import socket
 import sqlite3
 import stat
 import string
+import subprocess
 import sys
 import tempfile
 import threading
@@ -39,6 +43,12 @@ PERSON = re.compile(r"[a-z][a-z0-9_-]{0,63}\Z")
 MESSAGE = re.compile(r"msg_[a-f0-9]{32}\Z")
 TOKEN = re.compile(r"[A-Za-z0-9_-]{43,128}\Z")
 TERMINAL = {"approved", "rejected", "expired"}
+SERVICE = "opencode-connect-courier.service"
+# Variables that choose the queue, this configuration, or the OpenCode service:
+# the unit keeps the installing terminal's values, so both use the same state.
+SERVICE_ENVIRONMENT = ("OPENCODE_CONNECT_LOCAL_NODE", "OPENCODE_CONNECT_LOCAL_STATE_HOME",
+                       "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME")
+SYSTEM_PATH = ("/usr/local/bin", "/usr/bin", "/bin")
 
 
 def person(value):
@@ -123,11 +133,15 @@ def validate_card(card):
     return card
 
 
-def default_config_path():
+def config_home():
     base = Path(os.environ.get("XDG_CONFIG_HOME", str(Path.home() / ".config")))
     if not base.is_absolute():
         raise BridgeError("XDG_CONFIG_HOME must be absolute.")
-    return base / "opencode-connect/courier.json"
+    return base
+
+
+def default_config_path():
+    return config_home() / "opencode-connect/courier.json"
 
 
 def read_config(path):
@@ -786,6 +800,11 @@ def main(argv=None, *, queue_factory=real_queue):
     init.add_argument("--url", required=True, help="Reachable HTTP(S) origin included in invitation cards")
     run = sub.add_parser("run", help="Serve inbound messages and process outbound person messages")
     run.add_argument("--allow-wildcard", action="store_true")
+    run.add_argument("--relay", action="store_true",
+                     help="Also deliver this machine's local queue, instead of a separate local_bridge.py relay")
+    service = sub.add_parser("service", help="Optional systemd user service that runs `run --relay` at login")
+    service.add_argument("action", choices=("install", "uninstall", "start", "stop", "status", "logs"),
+                         help="install writes the unit and starts it; status and logs only read")
     diagnostic = sub.add_parser("doctor", help="Read-only state checks and bounded authenticated identity probes")
     diagnostic.add_argument("--offline", action="store_true", help="Skip all network probes")
     invite = sub.add_parser("invite", help="Issue a token and display its card once")
@@ -809,12 +828,15 @@ def main(argv=None, *, queue_factory=real_queue):
             findings = doctor(args.config, network=not args.offline)
             print(json.dumps(findings, ensure_ascii=False))
             return 1 if any(row["status"] == "FAIL" for row in findings) else 0
-        if args.command in {"init", "invite", "trust", "untrust", "approve", "reject"}:
+        if (args.command in {"init", "invite", "trust", "untrust", "approve", "reject"}
+                or args.command == "service" and args.action in {"install", "uninstall", "start", "stop"}):
             detail = args.command
             if args.command == "approve":
                 detail += f" {args.id} to {args.to}"
             elif args.command == "reject":
                 detail += f" {args.id}"
+            elif args.command == "service":
+                detail += " " + args.action
             elif hasattr(args, "person"):
                 detail += " " + args.person
             interactive_confirmation("Confirm " + detail)
@@ -825,6 +847,8 @@ def main(argv=None, *, queue_factory=real_queue):
             write_config(args.config, config)
             print("Private courier configuration created; no listener was started.")
             return 0
+        if args.command == "service":
+            return service_command(args.action, args.config)
         config = read_config(args.config)
         queue = queue_factory(args.config)
         try:
@@ -862,7 +886,11 @@ def main(argv=None, *, queue_factory=real_queue):
                 courier.reject(args.id)
                 print("Message rejected.")
             elif args.command == "run":
-                run_courier(courier, config["listen"], allow_wildcard=args.allow_wildcard)
+                stop = threading.Event()
+                relay = (lambda event: relay_worker(event, node=queue.node)) if args.relay else None
+                with stop_on_sigterm(stop):
+                    run_courier(courier, config["listen"], allow_wildcard=args.allow_wildcard,
+                                stop=stop, relay=relay)
         finally:
             queue.db.close()
         return 0
@@ -880,15 +908,20 @@ def log(message):
     print(time.strftime("%Y-%m-%d %H:%M:%S"), message, file=sys.stderr, flush=True)
 
 
-def serve_until(courier, server, stop, *, backoff=lambda failures: min(30, 2 ** min(failures, 5))):
+def serve_until(courier, server, stop, *, backoff=lambda failures: min(30, 2 ** min(failures, 5)),
+                healthy=lambda: True):
     """One request, one upload, one receipt probe and expiry per tick, until `stop`.
 
     A storage or network error in a tick is logged and retried after a growing
     wait instead of ending the worker. An upload interrupted by the error stays
     claimed, so the worker releases its own claims again: uploads are idempotent.
+    `healthy` turning false without a stop request, a relay thread that died,
+    ends the worker so that its service restarts.
     """
     failures = 0
     while not stop.is_set():
+        if not healthy() and not stop.is_set():
+            raise BridgeError("The local relay stopped unexpectedly; see the error above.")
         try:
             server.handle_request()
             courier.send_once()
@@ -907,9 +940,71 @@ def serve_until(courier, server, stop, *, backoff=lambda failures: min(30, 2 ** 
                 pass  # The next tick reports a lasting failure.
 
 
-def run_courier(courier, listen, *, allow_wildcard=False, stop=None):
+def listener(courier, listen, stop, *, allow_wildcard=False, retry=5):
+    """Bind, waiting while the address is not assigned yet: a user service can start
+    before the VPN or Wi-Fi brings it up. None if stopped first."""
+    waiting = False
+    while not stop.is_set():
+        try:
+            return CourierServer(courier, listen, allow_wildcard=allow_wildcard)
+        except OSError as exc:
+            if exc.errno != errno.EADDRNOTAVAIL:
+                raise
+            if not waiting:
+                log(f"Listen address {listen} is not assigned yet; retrying every {retry} s.")
+                waiting = True
+            stop.wait(retry)
+    return None
+
+
+def relay_worker(stop, *, node=None, open_box=None, adapter=None, retry=10):
+    """Deliver this machine's local queue beside the courier until `stop` is set.
+
+    Its mailbox opens in this thread, since a SQLite connection stays in its own.
+    A separate relay owning the queue, or a queue that cannot open, is logged when
+    that changes and retried: it never ends the courier.
+    """
+    import local_bridge
+    open_box = open_box or (lambda: local_bridge.LocalMailbox(local_bridge.state_root(), node=node))
+    adapter = adapter or local_bridge.local_adapter()
+    reported = None
+    while not stop.is_set():
+        box, problem = None, None
+        try:
+            box = open_box()
+            local_bridge.relay(box, adapter, stop=stop, report=lambda entry: log("Local relay: " + json.dumps(entry)))
+        except local_bridge.RelayBusy:
+            problem = "Another local relay owns this queue; waiting for it to stop."
+        except (BridgeError, OSError, sqlite3.Error) as exc:
+            problem = f"Local relay unavailable ({type(exc).__name__}: {exc})."
+        finally:
+            if box is not None:
+                box.db.close()
+        if problem and problem != reported:
+            log(problem)
+        reported = problem
+        stop.wait(retry)
+
+
+@contextmanager
+def stop_on_sigterm(stop):
+    """SIGTERM, which systemd sends to stop the unit, ends the worker between ticks."""
+    previous = signal.signal(signal.SIGTERM, lambda signum, frame: stop.set())
+    try:
+        yield
+    finally:
+        signal.signal(signal.SIGTERM, previous)
+
+
+def run_courier(courier, listen, *, allow_wildcard=False, stop=None, relay=None):
+    """Serve until `stop`; `relay(stop)`, when given, runs beside it in a thread.
+
+    On stop the relay finishes a delivery in progress and is joined before the
+    listener and the queue close, so it leaves no message `sending`.
+    """
     if listen_address(listen, allow_wildcard)[1] == 0:
         raise BridgeError("The operational listener requires a fixed nonzero port.")
+    stop = stop or threading.Event()
     # One coordinator per queue; no recovery of unrelated sending/uncertain rows.
     with courier.lock:
         database = courier.db.execute("PRAGMA database_list").fetchone()[2]
@@ -922,13 +1017,143 @@ def run_courier(courier, listen, *, allow_wildcard=False, stop=None):
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as exc:
             raise BridgeError("A courier already owns this queue.") from exc
-        with CourierServer(courier, listen, allow_wildcard=allow_wildcard) as server:
-            courier.recover_outbound()
-            server.timeout = 0.2
-            print("Courier active; all inbound messages require local approval.", flush=True)
-            serve_until(courier, server, stop or threading.Event())
+        worker = threading.Thread(target=relay, args=(stop,), name="local-relay") if relay else None
+        if worker is not None:
+            worker.start()
+        try:
+            server = listener(courier, listen, stop, allow_wildcard=allow_wildcard)
+            if server is None:
+                return
+            with server:
+                courier.recover_outbound()
+                server.timeout = 0.2
+                print(f"Courier listening on {listen}"
+                      + (" and delivering this machine's local queue." if worker else "."), flush=True)
+                serve_until(courier, server, stop, healthy=worker.is_alive if worker else lambda: True)
+        finally:
+            stop.set()
+            if worker is not None:
+                worker.join()
     finally:
         os.close(fd)
+
+
+def unit_path():
+    return config_home() / "systemd/user" / SERVICE
+
+
+def unit_word(value, *, command=False):
+    """One quoted unit value in which no specifier, nor in a command a variable, expands."""
+    value = str(value)
+    if not value.isprintable():
+        raise BridgeError("Service paths and settings must be printable.")
+    value = value.replace("\\", "\\\\").replace('"', '\\"').replace("%", "%%")
+    return '"' + (value.replace("$", "$$") if command else value) + '"'
+
+
+def render_unit(python, script, config, environment):
+    """The user unit: absolute paths, and the installing terminal's settings."""
+    if not all(Path(path).is_absolute() for path in (python, script, config)):
+        raise BridgeError("The service requires absolute paths.")
+    command = " ".join(unit_word(word, command=True)
+                       for word in (python, "-B", script, "--config", config, "run", "--relay"))
+    return "\n".join([
+        "[Unit]",
+        "Description=OpenCode Connect courier and local relay",
+        "StartLimitIntervalSec=0",  # Keep restarting while a network or service is down.
+        "",
+        "[Service]",
+        "ExecStart=" + command,
+        *("Environment=" + unit_word(f"{key}={value}") for key, value in environment.items()),
+        "Restart=on-failure",
+        "RestartSec=5",
+        # SIGTERM reaches only the courier, which lets a delivery in progress finish;
+        # the stop timeout is above the 30 s a delivery may take.
+        "KillMode=mixed",
+        "TimeoutStopSec=45",
+        "UMask=0077",
+        "",
+        "[Install]",
+        "WantedBy=default.target",
+        ""])
+
+
+def service_environment(environ):
+    """PATH with the folder of the `opencode` this terminal runs, and the variables above."""
+    opencode = shutil.which("opencode", path=environ.get("PATH"))
+    folders = [str(Path(opencode).absolute().parent)] if opencode else []
+    folders += [folder for folder in SYSTEM_PATH if folder not in folders]
+    if any(":" in folder for folder in folders):
+        raise BridgeError("The opencode folder cannot be part of a PATH.")
+    environment = {"PATH": ":".join(folders)}
+    environment.update((key, environ[key]) for key in SERVICE_ENVIRONMENT if environ.get(key))
+    return environment, opencode
+
+
+def systemctl(*arguments):
+    try:
+        result = subprocess.run(["systemctl", "--user", *arguments], capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise BridgeError(f"systemctl --user {arguments[0]} failed ({type(exc).__name__}).") from exc
+    if result.returncode:
+        detail = short_text(" ".join(result.stderr.split())) or f"status {result.returncode}"
+        raise BridgeError(f"systemctl --user {arguments[0]} failed: {detail}")
+
+
+def install_service(config_path, environ=os.environ):
+    """Write the unit once, then enable and start it. A different existing unit is kept."""
+    read_config(config_path)  # A unit that cannot read its configuration only restarts.
+    environment, opencode = service_environment(environ)
+    text = render_unit(sys.executable, Path(__file__).resolve(), config_path, environment)
+    path = unit_path()
+    if path.is_symlink() or (path.exists() and path.read_text(encoding="utf-8") != text):
+        raise BridgeError(f"A different {path} exists; it was not overwritten. "
+                          "Review it, then run `courier.py service uninstall`.")
+    if not path.exists():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as unit:
+            unit.write(text)
+    systemctl("daemon-reload")
+    systemctl("enable", "--now", SERVICE)
+    return path, opencode
+
+
+def uninstall_service():
+    """Stop, disable, and remove the unit `install` wrote; never another file."""
+    path = unit_path()
+    if path.is_symlink() or not path.is_file():
+        raise BridgeError("The courier service is not installed.")
+    if "Description=OpenCode Connect courier" not in path.read_text(encoding="utf-8"):
+        raise BridgeError(f"{path} was not written by this command; it was left untouched.")
+    systemctl("disable", "--now", SERVICE)
+    path.unlink()
+    systemctl("daemon-reload")
+    return path
+
+
+def service_command(action, config_path):
+    if action in {"status", "logs"}:
+        # systemd's own view, passed through; nothing changes.
+        command = (["systemctl", "--user", "status", "--no-pager", SERVICE] if action == "status" else
+                   ["journalctl", "--user", "--unit", SERVICE, "--lines", "100", "--no-pager"])
+        try:
+            return subprocess.run(command, timeout=60).returncode
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise BridgeError(f"{command[0]} failed ({type(exc).__name__}).") from exc
+    if action == "install":
+        path, opencode = install_service(config_path)
+        print(f"Service installed at {path} and started; it starts again at each login.")
+        if opencode is None:
+            print("opencode is not on PATH here: the service cannot deliver to OpenCode sessions "
+                  "until it is reinstalled from a terminal where it is.")
+    elif action == "uninstall":
+        print(f"Service stopped and removed: {uninstall_service()}")
+    else:
+        systemctl(action, SERVICE)
+        print("Service started." if action == "start" else
+              "Service stopped; a delivery in progress finished first.")
+    return 0
 
 
 if __name__ == "__main__":
