@@ -9,17 +9,56 @@ import threading
 import time
 
 from opencode_connect.core import BridgeError
-from opencode_connect.courier.app import Courier
+from opencode_connect.courier.app import Courier, local_target
 from opencode_connect.courier.doctor import doctor
+from opencode_connect.courier.notify import desktop_notification
 from opencode_connect.courier.service import service_command
 from opencode_connect.courier.settings import (clean_display, default_config_path, interactive_confirmation,
-                                               read_config, write_config)
+                                               read_config, require_terminal, write_config)
 from opencode_connect.courier.worker import relay_worker, run_courier, stop_on_sigterm
 
 
 def real_queue(config_path):
     from opencode_connect.local.mailbox import LocalMailbox, state_root
     return LocalMailbox(state_root())
+
+
+def approve_held(courier, message_id=None, target=None):
+    """Show what would be approved, then ask for one code for all of it.
+
+    Only the messages shown are approved, each to the destination shown: a reply
+    goes to the session that asked, any other message to its contact's route.
+    """
+    if message_id is None and target is not None:
+        raise BridgeError("--to needs a message ID; without one, each message goes to its own destination.")
+    held = courier.inbox()
+    if message_id is not None:
+        held = [row for row in held if row["id"] == message_id]
+        if not held:
+            raise BridgeError("Only a held, unexpired message can be approved.")
+        if target is not None:
+            held[0]["suggested_target"] = local_target(target)
+        elif held[0]["suggested_target"] is None:
+            raise BridgeError("This message has no destination: name one with --to, or set its contact's route.")
+    for row in held:
+        print(json.dumps({"id": row["id"], "person": row["person"], "text": row["text"], "to": row["suggested_target"]},
+                         ensure_ascii=False))
+    plan = [(row["id"], row["suggested_target"]) for row in held if row["suggested_target"]]
+    if plan:
+        targets = ", ".join(sorted({target for _, target in plan}))
+        interactive_confirmation(f"Approve {len(plan)} message(s) shown above, to {targets}")
+        approved = 0
+        for result in courier.approve_all(plan):
+            if result["state"] == "approved":
+                approved += 1
+            else:
+                print(clean_display(f"Skipped {result['id']}: {result['reason']}"))
+        print(f"{approved} message(s) approved for local delivery; not proof of session reception.")
+    if len(plan) < len(held):
+        print(f"{len(held) - len(plan)} message(s) without a destination stay held: "
+              "approve each with `approve ID --to SESSION`, or set its contact's route.")
+    elif not held:
+        print("No held messages.")
 
 
 def main(argv=None, *, queue_factory=real_queue):
@@ -46,12 +85,19 @@ def main(argv=None, *, queue_factory=real_queue):
     trust.add_argument("--card", required=True, help="JSON card, or '-' to paste privately in this terminal")
     untrust = sub.add_parser("untrust", help="Revoke contact and cancel unsent messages")
     untrust.add_argument("person")
-    sub.add_parser("contacts", help="List contact direction permissions, without tokens")
+    sub.add_parser("contacts", help="List contact direction permissions and routes, without tokens")
+    contact = sub.add_parser("contact", help="Choose the local session a contact's messages go to")
+    contact.add_argument("person")
+    contact.add_argument("--to", required=True, help="A session on this machine: node:ses_ID or claude:UUID")
+    mode = contact.add_mutually_exclusive_group()
+    mode.add_argument("--direct", action="store_true",
+                      help="Deliver without approval, up to 20 messages an hour; revoke it with --ask")
+    mode.add_argument("--ask", action="store_true", help="Hold each message for approval (the default)")
     inbox = sub.add_parser("inbox", help="Show sanitized held messages without approving them")
     inbox.add_argument("--watch", action="store_true")
-    approve = sub.add_parser("approve", help="Release one held message to an explicit local session")
-    approve.add_argument("id")
-    approve.add_argument("--to", required=True)
+    approve = sub.add_parser("approve", help="Release held messages to local sessions, after one confirmation")
+    approve.add_argument("id", nargs="?", help="One message; without it, every held message that has a destination")
+    approve.add_argument("--to", help="Destination for that message, instead of the asking session or the route")
     reject = sub.add_parser("reject", help="Reject one held message")
     reject.add_argument("id")
     args = parser.parse_args(argv)
@@ -60,12 +106,12 @@ def main(argv=None, *, queue_factory=real_queue):
             findings = doctor(args.config, network=not args.offline)
             print(json.dumps(findings, ensure_ascii=False))
             return 1 if any(row["status"] == "FAIL" for row in findings) else 0
-        if (args.command in {"init", "invite", "trust", "untrust", "approve", "reject"}
+        if args.command in {"approve", "contact"}:
+            require_terminal()  # The code is asked once the queue shows what would change.
+        elif (args.command in {"init", "invite", "trust", "untrust", "reject"}
                 or args.command == "service" and args.action in {"install", "uninstall", "start", "stop"}):
             detail = args.command
-            if args.command == "approve":
-                detail += f" {args.id} to {args.to}"
-            elif args.command == "reject":
+            if args.command == "reject":
                 detail += f" {args.id}"
             elif args.command == "service":
                 detail += " " + args.action
@@ -84,7 +130,7 @@ def main(argv=None, *, queue_factory=real_queue):
         config = read_config(args.config)
         queue = queue_factory(args.config)
         try:
-            courier = Courier(queue, config, config_path=args.config)
+            courier = Courier(queue, config, config_path=args.config, notify=desktop_notification)
             if args.command == "invite":
                 print(json.dumps(courier.invite(args.person)))
             elif args.command == "trust":
@@ -111,9 +157,17 @@ def main(argv=None, *, queue_factory=real_queue):
                     if not args.watch:
                         break
                     time.sleep(2)
+            elif args.command == "contact":
+                from opencode_connect.local.mailbox import canonical
+                target = local_target(canonical(args.to, queue.node))
+                mode = "direct" if args.direct else "ask"
+                interactive_confirmation(f"Confirm contact {args.person} to {target}, " + (
+                    "delivered without approval" if mode == "direct" else "held for approval"))
+                courier.set_route(args.person, target, mode)
+                print(f"Messages from {args.person} now go to {target}"
+                      + (" without approval." if mode == "direct" else " after approval."))
             elif args.command == "approve":
-                courier.approve(args.id, args.to)
-                print("Message approved for local delivery; not proof of session reception.")
+                approve_held(courier, args.id, args.to)
             elif args.command == "reject":
                 courier.reject(args.id)
                 print("Message rejected.")

@@ -3,8 +3,9 @@
 This opt-in courier exchanges **text only** between independently owned machines.
 There is no central mailbox, shared SSH shell, remote execution endpoint, or
 required VPN vendor. Each recipient holds inbound messages on their own machine
-until an operator explicitly approves one for a chosen local session. Receipt by
-a courier is not receipt by an assistant, and approval is not task completion.
+until an operator approves them for a local session, unless that operator chose
+direct delivery for the contact. Receipt by a courier is not receipt by an
+assistant, and approval is not task completion.
 
 ## Implementation status
 
@@ -118,26 +119,44 @@ the previous token stops authenticating. Contact lists never display tokens.
 ```sh
 python3 -B bin/courier.py inbox
 python3 -B bin/courier.py inbox --watch
+python3 -B bin/courier.py contact bob --to wsl:ses_EXAMPLE
+python3 -B bin/courier.py approve
 python3 -B bin/courier.py approve MESSAGE_ID --to wsl:ses_EXAMPLE
 python3 -B bin/courier.py reject MESSAGE_ID
 python3 -B bin/courier.py untrust bob
 ```
 
-`init`, `invite`, `trust`, `untrust`, `approve`, and `reject` require interactive
-stdin **and** stdout and retyping a newly displayed five-letter code. There is no
-`--yes` bypass. Approval always requires an explicit `--to` session address, even
-if the inbox suggests one. Supported shapes are `NODE:ses_ID` and `claude:UUID`;
-person targets cannot be used for approval or automatic forwarding. The real
-adapter additionally validates the local namespace; the local relay checks
-session availability before delivering anything to OpenCode.
+`init`, `invite`, `trust`, `untrust`, `contact`, `approve`, and `reject` require
+interactive stdin **and** stdout and retyping a newly displayed five-letter code.
+There is no `--yes` bypass.
+
+Each held message has a destination: the session that wrote the message it
+answers, else the contact's route, set with `contact`. `approve` without an ID
+shows every held message with its sanitized text and destination, then asks for
+one code. It approves only the messages it showed, each to the destination shown;
+messages without a destination stay held. `approve MESSAGE_ID` approves one
+message, and `--to` overrides its destination. Supported destinations are
+`NODE:ses_ID` and `claude:UUID`; person targets cannot be used for approval or
+automatic forwarding. The real adapter additionally validates the local
+namespace; the local relay checks session availability before delivering
+anything to OpenCode.
+
+A route is `ask` by default. `contact bob --to SESSION --direct` approves bob's
+messages on arrival, up to 20 an hour; the rest are held, because each delivery
+can start an agent and use model quota. A direct approval that fails, such as for
+a route to a session this queue does not serve, also leaves the message held.
+`contact bob --to SESSION --ask` revokes direct delivery, and `untrust` removes
+the route.
 
 Inbox output removes escape sequences, control characters, and invisible Unicode
 formatting controls from remote text. Original text is retained for the explicitly
 approved recipient, not executed. Treat all remote content as untrusted data.
 Held messages expire after seven days, including while the listener is idle;
 expiration is checked before approval and status/inbox reads. Expiration changes
-eligibility, not data erasure: deduplication/status tombstones persist. No desktop
-notification is enabled, and `--watch` never approves a message.
+eligibility, not data erasure: deduplication/status tombstones persist. When a
+message is held, `run` shows a desktop notification with `notify-send` if it is
+available. The notification names the contact, never the text. `--watch` never
+approves a message.
 
 ### Agent deny rules
 
@@ -216,7 +235,8 @@ OS/user separation if isolation from the local agent is required.
   against automatically retrying ambiguous session API deliveries.
 - `reply_to`, if supplied by the sending adapter, identifies the original remote
   receipt ID. Suggestions are scoped to that contact and map back to the recorded
-   source session. They never approve or route a reply automatically. The local
+   source session. They approve a reply only for a `direct` contact; otherwise
+   they only propose its destination. The local
    MCP accepts `reply_to` only for a message from that person already delivered to
    the caller; plain text is not parsed for routing instructions.
 

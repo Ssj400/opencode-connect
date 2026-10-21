@@ -20,6 +20,7 @@ class FakeQueue:
             id TEXT PRIMARY KEY, source TEXT, target TEXT, text TEXT,
             state TEXT, result TEXT, remote_key TEXT, reply_to TEXT)""")
         self.claimed = []
+        self.node = "wsl"
 
     @contextmanager
     def transaction(self):

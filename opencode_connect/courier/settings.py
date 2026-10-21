@@ -35,9 +35,13 @@ def clean_display(value):
     return "".join(c for c in text if not unicodedata.category(c).startswith("C"))
 
 
-def interactive_confirmation(action):
+def require_terminal():
     if not sys.stdin.isatty() or not sys.stdout.isatty():
         raise BridgeError("This command requires an interactive terminal on stdin and stdout.")
+
+
+def interactive_confirmation(action):
+    require_terminal()
     code = "".join(secrets.choice(string.ascii_uppercase) for _ in range(5))
     print(f"{clean_display(action)}. Type {code} to confirm:", flush=True)
     if input().strip() != code:

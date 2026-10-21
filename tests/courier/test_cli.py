@@ -95,7 +95,8 @@ class CourierConfigurationTests(unittest.TestCase):
     def test_cli_noninteractive_approval_denied_before_config_or_queue(self):
         for arguments in (["approve", "example", "--to", "wsl:ses_example"], ["invite", "bob"],
                           ["trust", "bob", "--card", "{}"], ["service", "install"], ["service", "uninstall"],
-                          ["service", "start"], ["service", "stop"]):
+                          ["service", "start"], ["service", "stop"], ["approve"],
+                          ["contact", "bob", "--to", "wsl:ses_example", "--direct"]):
             # A temporary configuration home: even if a refusal regressed, no unit or
             # configuration could land in the real one.
             with self.subTest(arguments=arguments), tempfile.TemporaryDirectory(prefix="courier-home-") as home, \
@@ -131,6 +132,7 @@ class CourierConfigurationTests(unittest.TestCase):
             factory = lambda config_path: FakeQueue(database)
             def command(*arguments):
                 with patch("opencode_connect.courier.cli.interactive_confirmation") as confirm, \
+                        patch("opencode_connect.courier.cli.require_terminal"), \
                         patch("sys.stdout", new_callable=io.StringIO) as output:
                     result = main(["--config", str(path), *arguments], queue_factory=factory)
                 self.assertEqual(result, 0)

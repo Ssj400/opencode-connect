@@ -108,6 +108,19 @@ class RealQueueCourierTests(unittest.TestCase):
         self.assertEqual(json.loads(self.a_box.get(sent[401])["result"])["reason"],
                          "HTTP request failed with status 401: Example reason.")
 
+    def test_direct_routes_deliver_through_the_real_queue_or_stay_held(self):
+        self.bob.set_route("alice", "linux:ses_example", "direct")
+        self.assertEqual(self.receive("direct")["state"], "approved")
+        outcome, _ = self.relay_mock(self.b_box)
+        self.assertEqual(outcome["state"], "delivered")
+        # A route to a node this queue does not serve fails inside the queue; the message waits.
+        self.bob.set_route("alice", "wsl:ses_example", "direct")
+        held = self.receive("other-node")
+        self.assertEqual(held["state"], "held")
+        self.assertEqual(self.b_box.get(held["id"])["state"], "held")
+        self.assertEqual([row["id"] for row in self.bob.inbox()], [held["id"]])
+        self.assertFalse(self.b_box.db.in_transaction)
+
     def test_expiry_and_rejection_use_real_held_transitions(self):
         expired, rejected = self.receive("expires"), self.receive("rejects")
         self.bob.reject(rejected["id"])
@@ -171,6 +184,7 @@ class RealQueueCourierTests(unittest.TestCase):
             self.assertTrue(ready.wait(3))
             real_courier = Courier
             with patch("opencode_connect.courier.cli.interactive_confirmation"), \
+                    patch("opencode_connect.courier.cli.require_terminal"), \
                     patch("sys.stdout", new_callable=io.StringIO), \
                     patch("opencode_connect.courier.cli.Courier", side_effect=lambda queue, config, **kw:
                           real_courier(queue, config, clock=lambda: self.now, **kw)):

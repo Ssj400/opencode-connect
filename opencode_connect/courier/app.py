@@ -21,6 +21,21 @@ HELD_LIMIT = 100
 RETENTION = 7 * 24 * 60 * 60
 MESSAGE = re.compile(r"msg_[a-f0-9]{32}\Z")
 TERMINAL = {"approved", "rejected", "expired"}
+# Messages a `direct` contact may deliver per hour without approval: each one can
+# start an agent and use model quota, so the rest wait for a person.
+DIRECT_PER_HOUR = 20
+MODES = ("ask", "direct")
+
+
+def local_target(target):
+    """A local session an approval may name: node:ses_ID or claude:UUID, never a person."""
+    if not isinstance(target, str) or not (
+            re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]{0,63}:ses_[A-Za-z0-9_-]{1,128}", target)
+            or re.fullmatch(r"claude:[a-fA-F0-9]{8}(?:-[a-fA-F0-9]{4}){3}-[a-fA-F0-9]{12}", target)):
+        raise BridgeError("Approval requires an explicit local session address, not a person target.")
+    if target.startswith("person:"):
+        raise BridgeError("Approval cannot forward to another person.")
+    return target
 
 
 class RequestError(BridgeError):
@@ -37,10 +52,12 @@ class Courier:
     accessed here. LocalMailbox supplies the operational adapter.
     """
 
-    def __init__(self, queue, config, *, config_path=None, clock=time.time):
+    def __init__(self, queue, config, *, config_path=None, clock=time.time, notify=None):
         self.queue = queue
         self.db = queue.db
         self.clock = clock
+        # Called with a contact's name, outside any transaction, when its message is held.
+        self.notify = notify or (lambda name: None)
         self.config_path = Path(config_path) if config_path is not None else None
         self.lock = threading.RLock()
         validate_config(config)
@@ -58,7 +75,10 @@ class Courier:
                         next_attempt REAL NOT NULL DEFAULT 0)""",
                     "CREATE TABLE IF NOT EXISTS courier_rate (contact TEXT PRIMARY KEY, start REAL, count INTEGER)",
                     """CREATE TABLE IF NOT EXISTS courier_peers (
-                        contact TEXT PRIMARY KEY, last_seen REAL, last_error TEXT, last_error_at REAL)"""):
+                        contact TEXT PRIMARY KEY, last_seen REAL, last_error TEXT, last_error_at REAL)""",
+                    """CREATE TABLE IF NOT EXISTS courier_routes (
+                        contact TEXT PRIMARY KEY, target TEXT NOT NULL,
+                        mode TEXT NOT NULL CHECK(mode IN ('ask', 'direct')))"""):
                 self.db.execute(statement)
             row = self.db.execute("SELECT data FROM courier_settings WHERE id=1").fetchone()
             if row is None:
@@ -117,6 +137,7 @@ class Courier:
             config["tokens"].pop(name, None)
             config["contacts"].pop(name, None)
             self.save_settings(config)
+            self.db.execute("DELETE FROM courier_routes WHERE contact=?", (name,))
             # Includes approved-but-pending inbound and pending outbound rows.
             cancellable = []
             for (message_id,) in self.db.execute(
@@ -136,8 +157,36 @@ class Courier:
     def contacts(self):
         with self.lock:
             config = self.settings()
-            return [{"person": name, "receiving": name in config["tokens"], "sending": name in config["contacts"]}
+            return [{"person": name, "receiving": name in config["tokens"], "sending": name in config["contacts"],
+                     "route": self.route(name)}
                     for name in sorted(set(config["tokens"]) | set(config["contacts"]))]
+
+    def set_route(self, name, target, mode="ask"):
+        """The local session a contact's messages go to: proposed for approval (`ask`),
+        or approved on arrival (`direct`), within DIRECT_PER_HOUR."""
+        person(name)
+        local_target(target)
+        if mode not in MODES:
+            raise BridgeError("A route's mode is ask or direct.")
+        with self.transaction():
+            if name not in self.settings()["tokens"]:
+                raise BridgeError("Routes apply to messages a contact sends; invite them first.")
+            self.db.execute("INSERT OR REPLACE INTO courier_routes VALUES(?,?,?)", (name, target, mode))
+
+    def route(self, name):
+        row = self.db.execute("SELECT target, mode FROM courier_routes WHERE contact=?", (name,)).fetchone()
+        return None if row is None else {"target": row[0], "mode": row[1]}
+
+    def destination(self, name, reply):
+        """Where a contact's message goes: to the session that wrote the message it
+        answers, else to the contact's route, else nowhere until a person chooses."""
+        if reply:
+            row = self.db.execute("SELECT source FROM courier_sent WHERE contact=? AND remote_id=? AND state!='cancelled'",
+                                  (name, reply)).fetchone()
+            if row:
+                return row[0]
+        route = self.route(name)
+        return route["target"] if route else None
 
     def authenticate(self, authorization):
         if not authorization or not authorization.startswith("Bearer ") or len(authorization) > 160:
@@ -205,7 +254,33 @@ class Courier:
                 raise BridgeError("Queue returned an invalid inbound message ID.")
             self.db.execute("INSERT INTO courier_inbound VALUES(?,?,?,?,?,?,?,'held',NULL)",
                             (message_id, name, key, digest, reply, self.clock(), self.clock() + RETENTION))
-            return {"id": message_id, "state": "held"}
+            route = self.route(name)
+            state = self.deliver_directly(message_id, name, reply) if route and route["mode"] == "direct" else "held"
+        if state == "held":
+            self.notify(name)
+        return {"id": message_id, "state": state}
+
+    def deliver_directly(self, message_id, name, reply):
+        """Approve a new message from a `direct` contact in the caller's transaction.
+
+        Above DIRECT_PER_HOUR, or when the approval fails, such as for a route to a
+        session this queue does not serve, the message stays held for a person;
+        the sender is never refused because of it.
+        """
+        recent = self.db.execute("SELECT count(*) FROM courier_inbound WHERE contact=? AND created>?",
+                                 (name, self.clock() - 3600)).fetchone()[0]
+        if recent > DIRECT_PER_HOUR:  # This message included.
+            return "held"
+        self.db.execute("SAVEPOINT direct")
+        try:
+            self._approve_locked(message_id, self.destination(name, reply))
+        except BridgeError:
+            # Undo only this approval, including any part the queue wrote.
+            self.db.execute("ROLLBACK TO direct")
+            self.db.execute("RELEASE direct")
+            return "held"
+        self.db.execute("RELEASE direct")
+        return "approved"
 
     def remote_status(self, authorization, message_id, *, rate_checked=False):
         with self.transaction():
@@ -252,29 +327,42 @@ class Courier:
             for message_id, name, reply, created in self.db.execute(
                     "SELECT id,contact,reply_to,created FROM courier_inbound WHERE state='held' ORDER BY created,id"):
                 row = self.queue.get(message_id)
-                suggestion = self.db.execute(
-                    "SELECT source FROM courier_sent WHERE contact=? AND remote_id=? AND state!='cancelled'",
-                    (name, reply)).fetchone() if reply else None
                 result.append({"id": message_id, "person": name, "text": clean_display(row["payload"]["text"]),
-                               "created": created, "suggested_target": suggestion[0] if suggestion else None})
+                               "created": created, "suggested_target": self.destination(name, reply)})
             return result
 
     def approve(self, message_id, target):
-        if not isinstance(target, str) or not (
-                re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]{0,63}:ses_[A-Za-z0-9_-]{1,128}", target)
-                or re.fullmatch(r"claude:[a-fA-F0-9]{8}(?:-[a-fA-F0-9]{4}){3}-[a-fA-F0-9]{12}", target)):
-            raise BridgeError("Approval requires an explicit local session address, not a person target.")
-        if target.startswith("person:"):
-            raise BridgeError("Approval cannot forward to another person.")
+        local_target(target)
         with self.transaction():
             self.expire()
-            row = self.db.execute("SELECT state,contact FROM courier_inbound WHERE id=?", (message_id,)).fetchone()
-            if row is None or row[0] != "held":
-                raise BridgeError("Only a held, unexpired message can be approved.")
-            if row[1] not in self.settings()["tokens"]:
-                raise BridgeError("Contact is no longer authorized.")
-            approved = self.queue.approve_inbound(message_id, target)
-            self.db.execute("UPDATE courier_inbound SET state='approved',target=? WHERE id=?", (approved["target"], message_id))
+            self._approve_locked(message_id, target)
+
+    def approve_all(self, plan):
+        """Approve exactly the (ID, target) pairs a person confirmed, each on its own.
+
+        A message that changed since it was shown, such as one that expired, is
+        skipped with its reason instead of stopping the others.
+        """
+        results = []
+        for message_id, target in plan:
+            try:
+                self.approve(message_id, target)
+                results.append({"id": message_id, "state": "approved", "target": target})
+            except BridgeError as exc:
+                results.append({"id": message_id, "state": "skipped", "reason": str(exc)})
+        return results
+
+    def _approve_locked(self, message_id, target):
+        """Release a held message to a local session. The caller holds the transaction,
+        which is not reentrant: receive() approves a `direct` contact's message in its own."""
+        local_target(target)
+        row = self.db.execute("SELECT state,contact FROM courier_inbound WHERE id=?", (message_id,)).fetchone()
+        if row is None or row[0] != "held":
+            raise BridgeError("Only a held, unexpired message can be approved.")
+        if row[1] not in self.settings()["tokens"]:
+            raise BridgeError("Contact is no longer authorized.")
+        approved = self.queue.approve_inbound(message_id, target)
+        self.db.execute("UPDATE courier_inbound SET state='approved',target=? WHERE id=?", (approved["target"], message_id))
 
     def reject(self, message_id):
         with self.transaction():
