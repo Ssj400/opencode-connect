@@ -14,7 +14,7 @@ import tempfile
 import threading
 import time
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import MagicMock, Mock, patch
 import uuid
 
 import courier
@@ -548,6 +548,35 @@ class CourierTests(unittest.TestCase):
             self.bob.send_once()
         request.assert_not_called()
         self.assertEqual(self.bob.queue.get(message_id)["state"], "failed")
+
+
+class WorkerLoopTests(unittest.TestCase):
+    def loop(self, ticks_before_stop, **failures):
+        stop, server, worker, ticks = threading.Event(), Mock(), MagicMock(), []
+
+        def handle():
+            ticks.append(1)
+            if len(ticks) == ticks_before_stop:
+                stop.set()
+
+        server.handle_request.side_effect = handle
+        for name, side_effect in failures.items():
+            getattr(worker, name).side_effect = side_effect
+        return stop, server, worker, ticks
+
+    def test_a_failing_tick_is_logged_and_the_worker_keeps_going(self):
+        stop, server, worker, ticks = self.loop(3, send_once=[sqlite3.OperationalError("database is locked"), 0, 0])
+        with patch("courier.log") as log:
+            courier.serve_until(worker, server, stop, backoff=lambda failures: 0)
+        self.assertEqual(len(ticks), 3)
+        log.assert_called_once()
+        self.assertIn("database is locked", log.call_args.args[0])
+        worker.recover_outbound.assert_called_once()  # Owned claims are released again.
+
+    def test_unexpected_errors_are_not_swallowed(self):
+        stop, server, worker, _ = self.loop(5, poll_once=ValueError("a bug"))
+        with patch("courier.log"), self.assertRaises(ValueError):
+            courier.serve_until(worker, server, stop, backoff=lambda failures: 0)
 
 
 class CourierConfigurationTests(unittest.TestCase):

@@ -850,7 +850,39 @@ def main(argv=None, *, queue_factory=real_queue):
         return 130
 
 
-def run_courier(courier, listen, *, allow_wildcard=False):
+def log(message):
+    """One line for the service journal. Never message text or credentials."""
+    print(time.strftime("%Y-%m-%d %H:%M:%S"), message, file=sys.stderr, flush=True)
+
+
+def serve_until(courier, server, stop, *, backoff=lambda failures: min(30, 2 ** min(failures, 5))):
+    """One request, one upload, one receipt probe and expiry per tick, until `stop`.
+
+    A storage or network error in a tick is logged and retried after a growing
+    wait instead of ending the worker. An upload interrupted by the error stays
+    claimed, so the worker releases its own claims again: uploads are idempotent.
+    """
+    failures = 0
+    while not stop.is_set():
+        try:
+            server.handle_request()
+            courier.send_once()
+            courier.poll_once()
+            with courier.transaction():
+                courier.expire()
+            failures = 0
+        except (BridgeError, OSError, sqlite3.Error) as exc:
+            failures += 1
+            delay = backoff(failures)
+            log(f"Worker tick failed ({type(exc).__name__}: {exc}); retrying in {delay} s.")
+            stop.wait(delay)
+            try:
+                courier.recover_outbound()
+            except (BridgeError, OSError, sqlite3.Error):
+                pass  # The next tick reports a lasting failure.
+
+
+def run_courier(courier, listen, *, allow_wildcard=False, stop=None):
     if listen_address(listen, allow_wildcard)[1] == 0:
         raise BridgeError("The operational listener requires a fixed nonzero port.")
     # One coordinator per queue; no recovery of unrelated sending/uncertain rows.
@@ -869,12 +901,7 @@ def run_courier(courier, listen, *, allow_wildcard=False):
             courier.recover_outbound()
             server.timeout = 0.2
             print("Courier active; all inbound messages require local approval.", flush=True)
-            while True:
-                server.handle_request()
-                courier.send_once()
-                courier.poll_once()
-                with courier.transaction():
-                    courier.expire()
+            serve_until(courier, server, stop or threading.Event())
     finally:
         os.close(fd)
 
