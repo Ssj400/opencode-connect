@@ -2,9 +2,17 @@
   "$schema": "https://opencode.ai/config.json",
   "mcp": {
     "servers": {
+      // The SSH bridge between the Linux coordinator and WSL.
       "laptop_bridge": {
         "type": "local",
         "command": ["python3", "/srv/opencode-connect/bin/mcp_server.py"],
+        "protocol": "legacy"
+      },
+      // Sessions on this machine, Claude Code sessions, and people through the courier.
+      // To name its node, prefix the command with "env", "OPENCODE_CONNECT_LOCAL_NODE=wsl".
+      "local_bridge": {
+        "type": "local",
+        "command": ["python3", "/srv/opencode-connect/bin/local_mcp_server.py"],
         "protocol": "legacy"
       }
     }

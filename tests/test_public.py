@@ -16,6 +16,8 @@ import uuid
 
 from opencode_connect import config
 from opencode_connect.bridge import collab, deploy, mcp_server
+from opencode_connect.claude import mcp_server as claude_mcp_server
+from opencode_connect.local import mcp_server as local_mcp_server
 from tests.bridge.test_bridge import fixture
 from tools import audit_public
 
@@ -158,6 +160,13 @@ class PublicTests(unittest.TestCase):
         for relative in ("../../README.md", "../../SECURITY.md"):
             self.assertTrue((skill.parent / relative).is_file())
         self.assertIn("Do not install anything automatically", text)
+
+    def test_the_skill_names_every_tool_of_each_server(self):
+        text = (ROOT / "skills/opencode-connect/SKILL.md").read_text()
+        for server in (mcp_server, local_mcp_server, claude_mcp_server):
+            for tool in server.TOOLS:
+                with self.subTest(server=server.__name__, tool=tool["name"]):
+                    self.assertIn(f"`{tool['name']}`", text)
 
     def test_english_project_policy_and_documentation(self):
         instructions = (ROOT / "AGENTS.md").read_text()
