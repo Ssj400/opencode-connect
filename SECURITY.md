@@ -10,6 +10,9 @@ to control that session. Existing permissions remain in force.
 
 A personal tool for two trusted machines and system accounts: Linux coordinator
 → Windows SSH → WSL. MCP uses stdio and does not open an additional network port.
+Only the opt-in [person-to-person courier](docs/multi-person.md) listens on the
+network, and only while its operator runs it: on one private LAN or VPN address
+chosen in `setup`, with a token per contact.
 The OpenCode API remains local and is accessed through `opencode api`.
 The `ai.opencode/sessionID` metadata provides correlation, not authentication.
 The allowlist reduces routing mistakes; it does not isolate hostile local users.
@@ -51,7 +54,7 @@ controls the bridge. Do not expose this RPC or MCP server as a public or multi-u
 `routes.json`, `.state/`, mailboxes, sockets, logs, backups, tokens, private identities,
 operational IPv4/IPv6 addresses, VPN host names, SSH fingerprints, real session/message
 IDs, Claude Code session UUIDs, and execution reports.
-`audit_public.py` uses an allowlist and heuristics; it does not replace human review
+`tools/audit_public.py` uses an allowlist and heuristics; it does not replace human review
 or a secret scanner. Do not treat it as certification that no private data exists.
 Names it cannot recognize belong in its private deny-list, `OPENCODE_CONNECT_AUDIT_TERMS`.
 

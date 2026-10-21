@@ -10,7 +10,7 @@
 ## Export and local testing
 
 - [x] Export only `deploy.FILES`, never the complete personal installation.
-- [x] Run `python3 -B -m unittest discover -v` and `python3 -B audit_public.py`.
+- [x] Run `python3 -B -m unittest discover -v` and `python3 -B tools/audit_public.py`.
 - [x] Manually review exported files in addition to the heuristic audit.
 - [x] Review the exact Git contents: no operational configuration, state, logs,
       backups, runtime artifacts, private directory links, or personal history.

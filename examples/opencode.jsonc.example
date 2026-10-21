@@ -4,7 +4,7 @@
     "servers": {
       "laptop_bridge": {
         "type": "local",
-        "command": ["python3", "/srv/opencode-connect/mcp_server.py"],
+        "command": ["python3", "/srv/opencode-connect/bin/mcp_server.py"],
         "protocol": "legacy"
       }
     }

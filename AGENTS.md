@@ -22,7 +22,7 @@ any language; this policy does not restrict messages exchanged through the bridg
 - Use `whoami` for the caller's address and `peers` for optional shortcuts. Do not guess
   destination sessions. Registration is a separate file-transfer requirement, not a chat gate.
 - `pending` does not mean delivered; `delivered` means API acceptance, not task completion.
-- `bridge.py doctor` is the read-only diagnosis. Keep it that way: no sends, claims,
+- `bin/bridge.py doctor` is the read-only diagnosis. Keep it that way: no sends, claims,
   relay locks, writable mailboxes, deployments, or reconnections.
 - Stale `sending` and `uncertain` states require human review, never automatic retries.
 - Distinguish source publication, SSH authentication, remote deployment, MCP reload,
@@ -43,7 +43,10 @@ any language; this policy does not restrict messages exchanged through the bridg
 
 ## Architecture boundaries
 
-- Keep `core.py` independent of harnesses, operating systems, configuration,
+- Code lives in the `opencode_connect` package, one subpackage per area. `bin/` holds
+  only thin launchers, and `tests/` mirrors the package. Keep every file at 600 lines
+  or fewer: split it by responsibility first. `tests/test_public.py` enforces this.
+- Keep `opencode_connect/core.py` independent of harnesses, operating systems, configuration,
   filesystems, subprocesses, and network clients. Use opaque node/session identifiers.
 - Put OpenCode CLI/API schemas in `opencode_adapter.py`, and command execution or
   Windows/WSL SSH details in `transports.py`.
