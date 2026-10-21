@@ -8,7 +8,10 @@ import threading
 import time
 import unittest
 from unittest.mock import Mock, patch
+import uuid
 
+from opencode_connect.claude import hook as claude_hook
+from opencode_connect.claude import mcp_server as claude_mcp_server
 from opencode_connect.core import BridgeError
 from opencode_connect.courier.app import RETENTION, Courier, RequestError
 from opencode_connect.courier.cli import main
@@ -17,6 +20,8 @@ from opencode_connect.local import mailbox
 from opencode_connect.local import mcp_server as local_mcp_server
 from opencode_connect.transports import HttpError
 from tests.courier.fakes import configuration
+
+CLAUDE = "claude:" + str(uuid.UUID(int=5))
 
 
 class RealQueueCourierTests(unittest.TestCase):
@@ -83,6 +88,41 @@ class RealQueueCourierTests(unittest.TestCase):
         self.assertEqual(self.b_box.get(reply["id"])["state"], "delivered")
         self.assertFalse(self.a_box.db.in_transaction)
         self.assertFalse(self.b_box.db.in_transaction)
+
+    def claude(self, name, tool_use, **arguments):
+        """A tool call from a Claude Code session on alice's machine, stamped as its hook would."""
+        claude_hook.record(tool_use, CLAUDE, root=self.a_root)
+        return claude_mcp_server.call_claude_tool({"name": name, "arguments": arguments,
+                                                   "_meta": {"claudecode/toolUseId": tool_use}},
+                                                  root=self.a_root, node="wsl")
+
+    def test_claude_code_asks_another_persons_opencode_session_and_receives_the_reply(self):
+        question = self.claude("send", "toolu_ask", to="person:bob", text="Which tests cover pairing?")
+        def receive_at_bob(url, **kwargs):
+            return self.bob.receive(kwargs["headers"]["Authorization"], kwargs["data"])
+        with patch("opencode_connect.courier.app.http_json", side_effect=receive_at_bob):
+            self.alice.send_once()
+        receipt = json.loads(self.a_box.get(question["id"])["result"])
+        self.bob.approve(receipt["remote_id"], "linux:ses_example")
+        outcome, adapter = self.relay_mock(self.b_box)
+        self.assertEqual(outcome["state"], "delivered")
+        self.assertIn("Reply address: person:alice", adapter.send_message.call_args.kwargs["text"])
+        reply = local_mcp_server.call_tool({"name": "send", "arguments": {
+            "to": "person:alice", "text": "test_pairing.py", "reply_to": receipt["remote_id"]},
+            "_meta": {"ai.opencode/sessionID": "ses_example"}}, root=self.b_root, node="linux")
+        def receive_at_alice(url, **kwargs):
+            return self.alice.receive(kwargs["headers"]["Authorization"], kwargs["data"])
+        with patch("opencode_connect.courier.app.http_json", side_effect=receive_at_alice):
+            self.bob.send_once()
+        inbound = self.alice.inbox()[0]
+        self.assertEqual(inbound["suggested_target"], CLAUDE)  # The session that asked.
+        self.alice.approve(inbound["id"], CLAUDE)
+        self.assertIsNone(self.relay_mock(self.a_box)[0])  # Claude's hooks deliver it, not the relay.
+        received = self.claude("receive", "toolu_receive")
+        self.assertEqual(received["id"], inbound["id"])
+        self.assertIn("> test_pairing.py", received["message"])
+        self.assertIn("Reply address: person:bob", received["message"])
+        self.assertEqual(self.b_box.get(reply["id"])["state"], "delivered")
 
     def test_uploads_fail_after_the_retention_period_and_retry_before_it(self):
         young = self.a_box.enqueue("ses_example", "person:bob", "Still worth trying")["id"]

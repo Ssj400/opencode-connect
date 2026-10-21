@@ -276,8 +276,8 @@ class ClaudeServerTests(ClaudeTestCase):
         for tool in claude_mcp_server.TOOLS:
             self.assertTrue(re.fullmatch(matcher, "mcp__opencode_connect__" + tool["name"]))
         self.assertFalse(re.fullmatch(matcher, "mcp__another_server__send"))
-        self.assertLessEqual({"Read(~/.config/opencode-connect/**)", "Read(~/.local/state/opencode-connect/**)"},
-                             set(settings["permissions"]["deny"]))
+        self.assertLessEqual({f"{rule}(~/{path}/opencode-connect/**)" for rule in ("Read", "Edit")
+                              for path in (".config", ".local/state")}, set(settings["permissions"]["deny"]))
 
     def test_protocol_lists_the_local_tools_and_receive(self):
         tools = claude_mcp_server.handle({"id": 1, "method": "tools/list"})["result"]["tools"]

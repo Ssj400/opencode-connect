@@ -309,6 +309,10 @@ The skill is not installed automatically. To enable it from a complete checkout,
 explicitly add the absolute path to its `skills` directory to the project's
 `skills` configuration array, preserving existing entries. For example:
 `"skills": ["/srv/opencode-connect/skills"]` (replace the placeholder path).
+In Claude Code, link the skill's folder into the project's `.claude/skills/`, or into
+`~/.claude/skills/` for every project:
+`ln -s /srv/opencode-connect/skills/opencode-connect .claude/skills/opencode-connect`.
+Claude Code reads the skill from the link's target.
 The skill uses relative links into the checkout; do not copy it without its docs.
 Official repository: https://github.com/Ssj400/opencode-connect.
 A future HTTP skill source requires an `index.json` catalog, not just a GitHub URL.
@@ -339,8 +343,9 @@ tools are preserved. See [core and adapter boundaries](docs/architecture.md).
 The code is the `opencode_connect` package; the commands are thin launchers in `bin/`,
 and `tests/` mirrors the package. See the [repository layout](docs/architecture.md#repository-layout).
 
-This separation prepares future platform and harness adapters; it does not yet
-add Linux-to-Linux, native Windows, macOS, or Claude Code support.
+This separation prepares future platform adapters; Linux-to-Linux, native Windows, and
+macOS do not exist yet. Claude Code sessions take part through the local queue rather
+than an adapter of their own; see [Claude Code sessions](docs/claude-code.md).
 
 ## License
 
