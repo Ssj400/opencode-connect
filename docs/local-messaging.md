@@ -25,7 +25,8 @@ opencode mcp add local_bridge -- env OPENCODE_CONNECT_LOCAL_NODE=wsl python3 /sr
 Replace the example absolute path with the actual checkout path. Preserve other
 MCP configuration; do not replace `laptop_bridge`. The server uses classic MCP,
 as does the existing cross-machine server. Reconnect the new server in `/mcps`
-and verify `connected` and `whoami`. This repository installs nothing automatically.
+and verify `connected` and `whoami`. Nothing is installed automatically: the courier's
+optional service, which can also run this relay, is installed only after a confirmation code.
 
 The node name is identity, not transport selection. Even when it is `wsl` or
 `linux`, this server and its worker use only `LocalCommandTransport`, never SSH.
@@ -99,7 +100,8 @@ OPENCODE_CONNECT_LOCAL_NODE=wsl python3 -B bin/local_bridge.py relay
 Review pending messages before starting the worker. **Delivery can trigger model
 responses and consume quota or budget.** `relay --once` also delivers a message;
 it is not a harmless health check. One local relay can run at a time. Ctrl+C stops
-the worker, not an agent. No daemon or automatic startup is installed.
+the worker, not an agent. The relay itself starts no daemon; the courier's optional
+service runs it at login instead (see [federated messaging](multi-person.md)).
 
 Local state uses `$OPENCODE_CONNECT_LOCAL_STATE_HOME/opencode-connect/local/.state/`
 when explicitly configured, otherwise the corresponding path under the existing

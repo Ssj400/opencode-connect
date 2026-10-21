@@ -10,7 +10,9 @@ For text between sessions in the same local OpenCode service, including the same
 WSL environment, see [local messaging](docs/local-messaging.md). This opt-in mode
 needs neither SSH nor remote configuration and keeps its queue separate.
 
-For opt-in person-to-person courier messaging and its approval boundaries, see [federated messaging](docs/multi-person.md).
+For opt-in person-to-person courier messaging, see [federated messaging](docs/multi-person.md):
+`courier.py setup` once per machine and `courier.py pair` once per contact connect two
+people's machines, and each person approves what reaches their sessions.
 
 The product vision is for **two people to work with their own assistants**, letting
 those assistants consult each other about shared work without making people relay
@@ -147,7 +149,7 @@ cd opencode-connect
    ```
 
    Keep the relay running in the foreground on Linux. Ctrl+C stops the relay,
-   **not the agents**. There is no daemon or automatic startup. `relay --once`
+   **not the agents**. This relay has no daemon or automatic startup. `relay --once`
    also delivers pending messages: it is not a harmless health check. WSL does not run a relay.
 
 ## Reconnecting versus deploying updates

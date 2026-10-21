@@ -35,8 +35,9 @@
 
 ## Not implemented in the current edition
 
-A daemon, GUI, frameworks, automatic credential-based reconnection or session
-selection, agent debates, automatic reconciliation, and additional platform adapters.
+A GUI, frameworks, automatic credential-based reconnection or session selection,
+agent debates, automatic reconciliation, and additional platform adapters. The
+only daemon is the courier's optional service; see the last section.
 
 ## Opt-in local messaging
 
@@ -184,3 +185,30 @@ as before. A WSL installation needs a new deployment, which adds the new paths a
 leaves the old root files unused. Runtime state and stored message formats do not
 change. Earlier sections name modules by their flat file names: `core.py` is now
 `opencode_connect/core.py`, and `local_bridge.py` is now `opencode_connect/local/mailbox.py`.
+
+## Connecting two people in a few steps
+
+The first live test of the courier connected two machines over a LAN, revocation
+included, but took about twenty manual steps: variables and wrappers, a port proxy
+and firewall rules, two cards and four confirmation codes, and two foreground
+processes that had to stay open. The owner judged that not worth it. The simplified
+flow keeps every consent boundary and removes the steps that were not decisions:
+
+- **`setup`** checks the machine before asking anything, offers only VPN and LAN
+  IPv4 addresses, and writes the configuration after one code. Firewall and MCP
+  commands are printed for the owner to review and run, never run: changing a
+  firewall or another tool's configuration stays the owner's decision.
+- **`pair`** replaces copying cards. A 60-bit code, shown once and never sent, proves
+  to each side that the other knows it; the first courier to use it becomes the
+  contact, and trust stays provisional until the joiner confirms.
+- **An optional systemd user service** runs the courier and this machine's local
+  relay from login. It is the project's only daemon, installed only after a code,
+  from `setup` or `service install`; the cross-machine relay still has none.
+- **Routes per contact**: messages are held for approval by default. `direct`
+  delivery is a standing approval for one session, set with a code, revocable,
+  and capped at 20 messages an hour, because each delivery can start an agent.
+  `approve` without an ID approves, with one code, exactly the messages it showed.
+- **`status`** describes the courier for people and only reads; `doctor` remains the
+  diagnosis. **`unpair`** revokes both directions on one side.
+- **WSL is supported in mirrored mode only**: NAT addresses are not offered, and
+  `setup` explains the switch. Native Windows and macOS are separate milestones.

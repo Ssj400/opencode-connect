@@ -11,8 +11,8 @@ opencode_connect/    the package; nothing in it runs as a script
   core.py config.py transports.py opencode_adapter.py
   bridge/            Linux -> WSL bridge: bridge, collab, deploy, mcp_server
   local/             local queue (mailbox) and its MCP server
-  courier/           person-to-person courier: settings, app, server, worker,
-                     service, doctor, cli
+  courier/           person-to-person courier: settings, app, pairing, server,
+                     worker, service, notify, host, setup, status, doctor, cli
   claude/            Claude Code hook and MCP server
 tests/               mirrors the package; fakes.py files hold shared test doubles
 tools/               maintenance: the export audit
@@ -105,7 +105,9 @@ Like `check`, it may create the private SSH socket directory.
 - Existing Linux -> Windows SSH -> WSL topology; no migration of personal state.
 - Same OpenCode message envelope, queue/steer values, and ask permissions for new sessions.
 - Ambiguous sends are not retried. Acceptance does not imply task completion.
-- No daemon, implicit installation, automatic responses, or permission escalation.
+- No implicit installation, automatic responses, or permission escalation. The only
+  daemon is the courier's optional systemd user service, installed after a
+  confirmation code by `courier.py setup` or `service install`.
 
 New queued messages pin canonical source and target addresses. Delivery checks these
 snapshots against resolved routes and the actual mailbox node. Older alias-only
