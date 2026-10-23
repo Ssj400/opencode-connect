@@ -79,6 +79,8 @@ FILES = (
     "opencode_connect/courier/host.py",
     "opencode_connect/courier/setup.py",
     "opencode_connect/courier/status.py",
+    "opencode_connect/courier/connect.py",
+    "opencode_connect/courier/menu.py",
     "opencode_connect/courier/cli.py",
     "tests/courier/__init__.py",
     "tests/courier/fakes.py",
@@ -92,6 +94,8 @@ FILES = (
     "tests/courier/test_pairing.py",
     "tests/courier/test_setup.py",
     "tests/courier/test_status.py",
+    "tests/courier/test_connect.py",
+    "tests/courier/test_menu.py",
     "docs/multi-person.md",
     # Claude Code harness
     "bin/claude_hook.py",

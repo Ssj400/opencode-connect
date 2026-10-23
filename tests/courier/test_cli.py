@@ -167,6 +167,21 @@ class CourierConfigurationTests(unittest.TestCase):
             finally:
                 queue.db.close()
 
+    def test_without_a_command_a_terminal_gets_the_menu_and_anything_else_the_usage_error(self):
+        factory = Mock()
+        with patch("sys.stdin.isatty", return_value=True), patch("sys.stdout.isatty", return_value=True), \
+                patch("opencode_connect.courier.menu.run_menu", return_value=0) as menu:
+            self.assertEqual(main(["--config", "/srv/example/courier.json"], queue_factory=factory), 0)
+        menu.assert_called_once_with(Path("/srv/example/courier.json"), factory)
+        for stdin_tty, stdout_tty in ((False, True), (True, False)):
+            with self.subTest(stdin=stdin_tty, stdout=stdout_tty), \
+                    patch("sys.stdin.isatty", return_value=stdin_tty), patch("sys.stdout.isatty", return_value=stdout_tty), \
+                    patch("opencode_connect.courier.menu.run_menu") as menu, \
+                    patch("sys.stderr", new_callable=io.StringIO), self.assertRaises(SystemExit) as caught:
+                main([])
+            self.assertEqual(caught.exception.code, 2)
+            menu.assert_not_called()
+
     def test_cli_help_without_config_or_network(self):
         result = subprocess.run([sys.executable, "-B", str(ROOT / "bin/courier.py"), "--help"],
                                 capture_output=True, text=True, timeout=5)

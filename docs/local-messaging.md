@@ -22,6 +22,11 @@ namespace `wsl`, configure that canonical node explicitly:
 opencode mcp add local_bridge -- env OPENCODE_CONNECT_LOCAL_NODE=wsl python3 /srv/opencode-connect/bin/local_mcp_server.py
 ```
 
+The courier's menu does this for you: run `python3 bin/courier.py` in a terminal and choose
+"Connect a project's OpenCode and Claude Code"; it adds the server only if the project
+lacks it, after one confirmation code, and passes this terminal's queue variables with
+`--env`.
+
 Replace the example absolute path with the actual checkout path. Preserve other
 MCP configuration; do not replace `laptop_bridge`. The server uses classic MCP,
 as does the existing cross-machine server. Reconnect the new server in `/mcps`

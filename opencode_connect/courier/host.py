@@ -116,11 +116,23 @@ def firewall_commands(choice, port, *, wsl=False):
     return commands
 
 
+def queue_variables():
+    """NAME=value for each queue variable set in this terminal: MCP servers and hooks
+    must use the same queue as the courier."""
+    return [f"{name}={os.environ[name]}" for name in QUEUE_ENVIRONMENT if os.environ.get(name)]
+
+
+def opencode_mcp_add():
+    return ["opencode", "mcp", "add", *(part for pair in queue_variables() for part in ("--env", pair)),
+            "local_bridge", "--", "python3", str(ROOT / "bin/local_mcp_server.py")]
+
+
+def claude_mcp_add():
+    return ["claude", "mcp", "add", "opencode_connect", "--scope", "local",
+            *(part for pair in queue_variables() for part in ("-e", pair)),
+            "--", "python3", str(ROOT / "bin/claude_mcp_server.py")]
+
+
 def mcp_commands():
     """The commands that give OpenCode and Claude Code sessions in a project this queue."""
-    shared = [f"{name}={os.environ[name]}" for name in QUEUE_ENVIRONMENT if os.environ.get(name)]
-    opencode = ["opencode", "mcp", "add", "local_bridge", "--", *(["env", *shared] if shared else []),
-                "python3", str(ROOT / "bin/local_mcp_server.py")]
-    claude = ["claude", "mcp", "add", "opencode_connect", "--scope", "local",
-              *(part for pair in shared for part in ("-e", pair)), "--", "python3", str(ROOT / "bin/claude_mcp_server.py")]
-    return shlex.join(opencode), shlex.join(claude)
+    return shlex.join(opencode_mcp_add()), shlex.join(claude_mcp_add())

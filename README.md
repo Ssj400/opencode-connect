@@ -12,7 +12,9 @@ needs neither SSH nor remote configuration and keeps its queue separate.
 
 For opt-in person-to-person courier messaging, see [federated messaging](docs/multi-person.md):
 `courier.py setup` once per machine and `courier.py pair` once per contact connect two
-people's machines, and each person approves what reaches their sessions.
+people's machines, and each person approves what reaches their sessions. Without
+arguments, `courier.py` opens a menu that also connects a project's OpenCode and Claude
+Code sessions to the local queue.
 
 The product vision is for **two people to work with their own assistants**, letting
 those assistants consult each other about shared work without making people relay

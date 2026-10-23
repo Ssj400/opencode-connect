@@ -10,7 +10,10 @@ assistant, and approval is not task completion.
 ## Connecting two people
 
 Each person runs these on their own machine, in a terminal, from a complete
-checkout. Nothing is installed or opened without a confirmation code.
+checkout. Nothing is installed or opened without a confirmation code. Run without
+arguments, `python3 bin/courier.py` opens a numbered menu with the same actions, where
+contacts and sessions are chosen from lists instead of typed; it runs exactly these
+commands, with the same checks and codes.
 
 | When | Command | What it does |
 | --- | --- | --- |
