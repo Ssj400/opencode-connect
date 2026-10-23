@@ -13,3 +13,5 @@ __pycache__/
 *.bak
 *.sock
 *~
+# Claude Code's settings and state for this checkout, such as its hooks.
+.claude/

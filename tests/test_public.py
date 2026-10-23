@@ -79,6 +79,8 @@ class PublicTests(unittest.TestCase):
                 shutil.copyfile(ROOT / name, target)
             (root / ".git").mkdir()
             (root / ".git" / "config").write_text("local repository metadata")
+            (root / ".claude").mkdir()  # Claude Code's local settings, ignored by Git.
+            (root / ".claude" / "settings.local.json").write_text('{"hooks": {}}')
             self.assertEqual(audit_public.audit(root), [])
             (root / "unexpected").mkdir()
             (root / "unexpected" / ".git").mkdir()

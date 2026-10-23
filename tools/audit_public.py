@@ -112,9 +112,10 @@ def audit(root, terms=None):
             continue
         issues.extend(f"{name}: {issue}" for issue in findings(text, terms))
     allowed_dirs = {str(parent) for name in FILES for parent in Path(name).parents}
-    # Generated files are never exported. Root Git metadata is not project content;
-    # nested repositories and symlinks are still rejected.
-    ignored = {"__pycache__", ".test-tmp"}
+    # Generated files and Claude Code's local settings (ignored by Git) are never
+    # exported. Root Git metadata is not project content; nested repositories and
+    # symlinks are still rejected.
+    ignored = {"__pycache__", ".test-tmp", ".claude"}
     def visit(folder):
         for path in sorted(folder.iterdir()):
             relative = path.relative_to(root)
