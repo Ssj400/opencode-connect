@@ -13,5 +13,8 @@ __pycache__/
 *.bak
 *.sock
 *~
-# Claude Code's settings and state for this checkout, such as its hooks.
+# Claude Code's and OpenCode's settings for this checkout, such as hooks and MCP servers.
 .claude/
+/opencode.json
+/opencode.jsonc
+/.opencode/
