@@ -128,11 +128,34 @@ class HookTests(ClaudeTestCase):
         self.assertTrue(self.hook("prompt", {"session_id": SESSION}))
         self.assertEqual(self.hook("stop", {"session_id": SESSION}), "")
 
+    def test_prompt_and_stop_remember_where_each_session_runs(self):
+        other, third = ("claude:" + str(uuid.UUID(int=number)) for number in (8, 12))
+        self.hook("prompt", {"session_id": SESSION, "cwd": "/srv/example/project"})
+        with patch("opencode_connect.claude.hook.time.time", return_value=time.time() + 60):
+            self.hook("stop", {"session_id": other.split(":")[1], "cwd": 7})
+        with patch("opencode_connect.claude.hook.time.time", return_value=time.time() + 30):
+            self.hook("prompt", {"session_id": third.split(":")[1], "cwd": "/srv/third"})
+        self.hook("pre-tool", {"session_id": str(uuid.UUID(int=9)), "tool_use_id": "toolu_Y"})
+        spool = self.home / "opencode-connect/local/.state/claude"
+        (spool / "session-not-a-uuid.json").write_text("{}")
+        (spool / ("session-" + str(uuid.UUID(int=10)) + ".json")).write_text("not json")
+        # A record whose name is not its own session's is ignored.
+        (spool / ("session-" + str(uuid.UUID(int=11)) + ".json")).write_text(
+            json.dumps({"address": ADDRESS, "cwd": "/srv/forged", "seen": time.time() + 120}))
+        self.assertEqual([(row["address"], row["cwd"]) for row in claude_hook.sessions()],
+                         [(other, None), (third, "/srv/third"), (ADDRESS, "/srv/example/project")])
+
+    def test_a_failed_session_record_never_hides_the_pointer(self):
+        self.mailbox().enqueue("ses_SOURCE", ADDRESS, "Waiting")
+        with patch("opencode_connect.claude.hook.note_session", side_effect=OSError("No space left")):
+            self.assertIn("1 message(s)", self.hook("prompt", {"session_id": SESSION}))
+
     def test_hooks_ignore_malformed_input_and_create_nothing(self):
         payloads = ("", "not json", "[]", json.dumps({"session_id": "not-a-uuid"}), json.dumps({"session_id": 7}),
                     json.dumps({"session_id": SESSION, "tool_use_id": "../escape"}))
         for event in ("pre-tool", "prompt", "stop"):
-            for index, payload in enumerate(payloads):
+            # The last payload is malformed only for pre-tool: its session is valid.
+            for index, payload in enumerate(payloads if event == "pre-tool" else payloads[:-1]):
                 with self.subTest(event=event, payload=index):
                     self.assertEqual(self.hook(event, payload), "")
         self.assertEqual(list(self.home.iterdir()), [])

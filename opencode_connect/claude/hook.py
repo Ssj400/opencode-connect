@@ -109,6 +109,35 @@ def unannounced(address, ids, root=None):
     return [message_id for message_id in ids if message_id not in known]
 
 
+def note_session(address, cwd, root=None):
+    """Remember the folder a session runs in and when it was last seen, so that a person
+    can choose it from a list."""
+    descriptor, temporary = tempfile.mkstemp(dir=spool(root), prefix=".session-")
+    with os.fdopen(descriptor, "w") as handle:
+        json.dump({"address": address, "cwd": cwd if isinstance(cwd, str) else None, "seen": time.time()}, handle)
+    os.replace(temporary, spool(root) / f"session-{address.split(':', 1)[1]}.json")
+
+
+def sessions(root=None):
+    """Claude Code sessions the hooks have seen, most recent first. Read-only: without a
+    spool there are none, and unreadable records are skipped."""
+    folder = Path(root or state_path()) / ".state" / "claude"
+    if folder.is_symlink() or not folder.is_dir():
+        return []
+    found = []
+    for path in folder.glob("session-*.json"):
+        try:
+            entry = json.loads(path.read_text())
+            address = canonical(entry["address"])
+            if path.name != f"session-{address.split(':', 1)[1]}.json" or not address.startswith("claude:"):
+                continue
+            found.append({"address": address, "cwd": entry["cwd"] if isinstance(entry.get("cwd"), str) else None,
+                          "seen": float(entry["seen"])})
+        except (OSError, ValueError, KeyError, TypeError, AttributeError, BridgeError):
+            continue
+    return sorted(found, key=lambda row: row["seen"], reverse=True)
+
+
 def wake(address, root=None, poll=2.0, sleep=time.sleep):
     """Exit 2 with the pointer once a message nobody announced is waiting. Claude Code
     starts a watcher at every stop, so one lock per session lets only the first wait."""
@@ -138,6 +167,8 @@ def main(argv=None, stdin=None):
             return 0
         if args.event == "wake":
             return wake(address)
+        with contextlib.suppress(OSError, ValueError):  # A missing record never hides the pointer.
+            note_session(address, data.get("cwd"))
         if args.event == "stop" and data.get("stop_hook_active"):
             return 0
         ids = waiting(address)

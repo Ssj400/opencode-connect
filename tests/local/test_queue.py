@@ -65,6 +65,23 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual(OpenCodeAdapter(api).find_sessions("API", exclude="ses_SELF"),
                          {"candidates": [], "next_cursor": None, "complete": True})
 
+    def test_recent_sessions_list_roots_newest_first_without_a_search(self):
+        api = Mock()
+        api.call.return_value = {"data": [candidate("ses_OLD", "Old", time={"updated": 10}),
+                                           candidate("ses_NEW", "New", time={"updated": 20}),
+                                           candidate("ses_UNDATED", "Undated"),
+                                           candidate("ses_CHILD", parentID="ses_NEW"),
+                                           candidate("ses_GONE", time={"archived": 1})], "cursor": {}}
+        self.assertEqual([(s["id"], s["title"], s["directory"]) for s in OpenCodeAdapter(api).recent_sessions()],
+                         [("ses_NEW", "New", "/srv/example"), ("ses_OLD", "Old", "/srv/example"),
+                          ("ses_UNDATED", "Undated", "/srv/example")])
+        self.assertEqual(parse_qs(urlsplit(api.call.call_args.args[1]).query), {"limit": ["25"], "parentID": ["null"]})
+        for response in ({}, {"data": [candidate(location={})], "cursor": {}},
+                         {"data": [candidate(time={"updated": "soon"})], "cursor": {}}):
+            api.call.return_value = response
+            with self.subTest(response=response), self.assertRaises(BridgeError):
+                OpenCodeAdapter(api).recent_sessions()
+
     def test_invalid_inputs_and_responses_fail_closed(self):
         api = Mock()
         adapter = OpenCodeAdapter(api)
