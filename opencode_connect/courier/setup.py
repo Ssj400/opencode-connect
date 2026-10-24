@@ -2,7 +2,6 @@
 for its owner to do. It writes the configuration and installs the service only after
 a confirmation code; firewall and MCP commands are printed, never run."""
 
-import ipaddress
 import os
 from pathlib import Path
 import socket
@@ -88,11 +87,11 @@ def choose(found):
     return ask("Address [1]: ", number)
 
 
-def free_port(address):
+def free_port(address, default=host.DEFAULT_PORT):
     def port(answer):
-        if not whole(answer or str(host.DEFAULT_PORT), 1024, 65535):
+        if not whole(answer or str(default), 1024, 65535):
             raise BridgeError("Type a port from 1024 to 65535.")
-        value = int(answer or host.DEFAULT_PORT)
+        value = int(answer or default)
         try:
             can_bind(address, value)
         except OSError as exc:
@@ -100,14 +99,12 @@ def free_port(address):
                               "choose another port.") from exc
         return value
 
-    return ask(f"Port [{host.DEFAULT_PORT}]: ", port)
+    return ask(f"Port [{default}]: ", port)
 
 
 def new_config(found, wsl, allow_172):
     """Ask for a name and an address; None when this machine has none to offer."""
-    if wsl and not allow_172:
-        # Under NAT these are WSL's own; in mirrored mode, Windows' virtual switches.
-        found = [row for row in found if ipaddress.ip_address(row["address"]) not in host.WSL_NAT]
+    found = host.reachable(found, wsl and not allow_172)
     if not found:
         print(WSL_MIRRORED.format(network=host.WSL_NAT) if wsl else
               "No LAN or VPN address found: connect to the network or start the VPN that your contacts use, "
@@ -172,7 +169,7 @@ def setup(config_path, *, allow_172=False):
     address, port = listen_address(config["listen"], allow_wildcard=True)
     choice = next((row for row in found if row["address"] == address), None)
     if choice is None:
-        print(f"{address} is not an address of this machine now: is its network or VPN down?")
+        print(host.moved_advice(address))
     else:
         print_firewall(choice, port, wsl)
     opencode, claude = host.mcp_commands()

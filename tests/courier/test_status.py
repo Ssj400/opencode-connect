@@ -14,7 +14,7 @@ from opencode_connect.courier.settings import write_config
 from opencode_connect.courier.status import courier_relays, separate_relays, status
 from opencode_connect.local import mailbox
 from tests.courier.fakes import configuration
-from tests.courier.test_setup import system
+from tests.courier.test_setup import VPN, link, system
 
 
 class StatusTests(unittest.TestCase):
@@ -115,8 +115,37 @@ class StatusTests(unittest.TestCase):
         self.assertIn("Service: not installed; `python3 bin/courier.py service install` starts the courier "
                       "at each login.", text)
         self.assertIn("Listener: nothing answers on 127.0.0.1:8765", text)
-        self.assertEqual(run.calls, [])  # No unit: systemd is not asked.
+        self.assertNotIn("systemctl", [command[0] for command in run.calls])  # No unit: systemd is not asked.
+        self.assertNotIn("Address:", text)  # Its IP is still on this machine: only stopped.
         self.assertIn("No contacts yet: `python3 bin/courier.py pair`", text)
+
+    def test_an_address_no_longer_on_this_machine_says_how_to_change_it(self):
+        moved = [link("xsred0", VPN + "/32", flags=("POINTOPOINT", "UP"))]
+        with patch("opencode_connect.courier.status.unit_path", return_value=self.root / "no-unit"), \
+                patch("opencode_connect.courier.host.subprocess.run", system(links=moved)), \
+                patch("opencode_connect.courier.doctor.socket.create_connection", side_effect=ConnectionRefusedError):
+            _, lines = status(self.path, root=self.queue_root, proc=self.root / "no-proc", wsl=False)
+        text = "\n".join(lines)
+        for fragment in ("Address: 127.0.0.1 is not an address of this machine now", VPN + " (VPN, xsred0)",
+                         "Change this machine's address", "courier.py address"):
+            self.assertIn(fragment, text)
+
+    def test_each_contact_says_whether_it_has_this_courier_s_new_address(self):
+        for name in ("bob", "carol", "dave"):
+            self.app.trust(name, {"person": name, "url": "http://192.0.2.20:8765", "token": name[0].upper() * 43})
+        Courier(self.box, self.app.settings(), clock=lambda: self.now,
+                readdress={"listen": "127.0.0.1:8765", "url": "http://127.0.0.1:9000"})
+        with self.app.transaction():
+            self.app.db.execute("UPDATE courier_announce SET last_error='Connection refused.' WHERE contact='bob'")
+            self.app.db.execute("UPDATE courier_announce SET state='unsupported' WHERE contact='carol'")
+            self.app.db.execute("UPDATE courier_announce SET state='refused', last_error='HTTP request failed "
+                                "with status 400: wrong address.' WHERE contact='dave'")
+        _, text, _ = self.status()
+        lines = text.splitlines()
+        self.assertIn("    Your new address has not reached bob yet; the last try failed: Connection refused.", lines)
+        self.assertIn("    carol's courier is older and did not take your new address: pair again, with "
+                      "`python3 bin/courier.py pair --for carol --replace` here and their `pair LINK --replace`.", lines)
+        self.assertIn("refused (HTTP request failed with status 400: wrong address) your new address", text)
 
     def test_unset_unreadable_or_unstarted_state_is_reported_not_repaired(self):
         missing = self.root / "missing/courier.json"

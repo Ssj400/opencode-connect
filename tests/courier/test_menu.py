@@ -14,6 +14,7 @@ from opencode_connect.courier.app import Courier
 from opencode_connect.courier.menu import run_menu
 from opencode_connect.courier.settings import write_config
 from opencode_connect.local import mailbox
+from tests.courier.test_setup import VPN
 from tests.courier.fakes import configuration
 
 CLAUDE = "claude:" + str(uuid.UUID(int=4))
@@ -30,7 +31,7 @@ class MenuTests(unittest.TestCase):
         self.path = self.root / "courier.json"
         self.factory = Mock()
 
-    def menu(self, *answers, contacts=("alice", "bob"), rows=ROWS, connect=None):
+    def menu(self, *answers, contacts=("alice", "bob"), rows=ROWS, connect=None, lost=None):
         """The menu with `answers` typed in order; then the input ends, as with Ctrl+D."""
         typed = list(answers)
 
@@ -44,6 +45,7 @@ class MenuTests(unittest.TestCase):
                 patch("opencode_connect.courier.menu.contacts", return_value=list(contacts)), \
                 patch("opencode_connect.courier.menu.destinations", return_value=list(rows)), \
                 patch("opencode_connect.courier.menu.connect_project", side_effect=connect) as connected, \
+                patch("opencode_connect.courier.menu.host.lost_address", return_value=lost), \
                 patch("sys.stdout", new_callable=io.StringIO) as output:
             result = run_menu(self.path, self.factory)
         self.assertEqual(result, 0)
@@ -69,25 +71,46 @@ class MenuTests(unittest.TestCase):
         self.assertIn("Claude Code: /srv/example", output)
         self.assertIn(CLAUDE, output)
 
+    def test_a_new_address_is_chosen_from_this_machines_and_keeps_the_port(self):
+        write_config(self.path, {**configuration(), "listen": "127.0.0.1:9000"})
+        vpn = {"interface": "xsred0", "address": VPN, "network": VPN + "/32", "kind": "VPN"}
+        with patch("opencode_connect.courier.menu.host.interface_addresses", return_value=[vpn]), \
+                patch("opencode_connect.courier.menu.host.on_wsl", return_value=False), \
+                patch("opencode_connect.courier.setup.can_bind") as bind:
+            commands, _, output = self.menu("7", "", "", "", lost="127.0.0.1")
+        self.assertEqual(commands, [["address", "--listen", VPN + ":9000", "--url", "http://" + VPN + ":9000"]])
+        bind.assert_called_once_with(VPN, 9000)
+        self.assertIn("Warning: ", output)
+        self.assertIn("127.0.0.1 is not an address of this machine now", output)
+
+    def test_changing_the_address_needs_a_setup_and_an_address(self):
+        commands, _, output = self.menu("7", "")
+        self.assertIn("not set up yet: choose 1 first", output)
+        write_config(self.path, configuration())
+        with patch("opencode_connect.courier.menu.host.interface_addresses", return_value=[]):
+            commands, _, output = self.menu("7", "")
+        self.assertEqual(commands, [])
+        self.assertIn("No LAN or VPN address found", output)
+
     def test_without_contacts_there_is_nothing_to_route_or_remove(self):
         commands, _, output = self.menu("4", "", "5", "", contacts=())
         self.assertEqual(commands, [])
         self.assertEqual(output.count("No contacts yet"), 2)
 
     def test_connecting_a_project_defaults_to_this_folder_and_reports_refusals(self):
-        _, connected, output = self.menu("7", "", "", "7", "/srv/elsewhere", "",
+        _, connected, output = self.menu("8", "", "", "8", "/srv/elsewhere", "",
                                          connect=[0, BridgeError("/srv/elsewhere is not a folder.")])
         self.assertEqual([call.args[0] for call in connected.call_args_list],
                          [Path(os.getcwd()), Path("/srv/elsewhere")])
         self.assertIn("is not a folder", output)
 
     def test_addresses_are_listed_and_wrong_choices_are_asked_again(self):
-        commands, _, output = self.menu("8", "", "9", "x")
+        commands, _, output = self.menu("9", "", "10", "x")
         self.assertEqual(commands, [])
         for row in ROWS:
             self.assertIn(row["address"], output)
-        self.assertEqual(output.count("Type a number from 0 to 8."), 2)
-        _, _, output = self.menu("8", "", rows=[])
+        self.assertEqual(output.count("Type a number from 0 to 9."), 2)
+        _, _, output = self.menu("9", "", rows=[])
         self.assertIn("No sessions found", output)
 
 

@@ -13,6 +13,7 @@ import threading
 import time
 
 from opencode_connect.core import BridgeError
+from opencode_connect.courier import host
 from opencode_connect.courier.server import CourierServer
 from opencode_connect.courier.settings import listen_address
 
@@ -45,6 +46,7 @@ def serve_until(courier, server, stop, *, backoff=lambda failures: min(30, 2 ** 
             server.handle_request()
             courier.send_once()
             courier.poll_once()
+            courier.announce_once()
             courier.tidy()
             failures = 0
         except (BridgeError, OSError, sqlite3.Error) as exc:
@@ -69,7 +71,9 @@ def listener(courier, listen, stop, *, allow_wildcard=False, retry=5):
             if exc.errno != errno.EADDRNOTAVAIL:
                 raise
             if not waiting:
-                log(f"Listen address {listen} is not assigned yet; retrying every {retry} s.")
+                lost = host.lost_address(listen)
+                log(f"Listen address {listen} is not assigned yet; retrying every {retry} s."
+                    + (" " + host.moved_advice(lost) if lost else ""))
                 waiting = True
             stop.wait(retry)
     return None

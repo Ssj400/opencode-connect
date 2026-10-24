@@ -11,6 +11,7 @@ import threading
 import time
 
 from opencode_connect.core import BridgeError
+from opencode_connect.courier.moves import ANNOUNCE_TABLE, AddressMixin
 from opencode_connect.courier.pairing import PairingMixin
 from opencode_connect.courier.settings import (SOCKET_TIMEOUT, TOKEN, RequestError, clean_display, person, validate_card,
                                                validate_config, write_config)
@@ -39,7 +40,7 @@ def local_target(target):
     return target
 
 
-class Courier(PairingMixin):
+class Courier(PairingMixin, AddressMixin):
     """Application logic over an injected local queue sharing one SQLite transaction.
 
     The queue exposes db, transaction(), claim(prefix), mark(), release(),
@@ -78,7 +79,7 @@ class Courier(PairingMixin):
                         nonce TEXT, contact TEXT, request TEXT, response TEXT, previous TEXT)""",
                     """CREATE TABLE IF NOT EXISTS courier_routes (
                         contact TEXT PRIMARY KEY, target TEXT NOT NULL,
-                        mode TEXT NOT NULL CHECK(mode IN ('ask', 'direct')))"""):
+                        mode TEXT NOT NULL CHECK(mode IN ('ask', 'direct')))""", ANNOUNCE_TABLE):
                 self.db.execute(statement)
             row = self.db.execute("SELECT data FROM courier_settings WHERE id=1").fetchone()
             if row is None:
@@ -89,7 +90,10 @@ class Courier(PairingMixin):
                 saved = validate_config(json.loads(row[0]))
                 if saved["person"] != config["person"]:
                     raise BridgeError("Courier identity differs from its stored configuration; review required.")
-                self.save_settings(validate_config({**saved, **readdress}))
+                moved = validate_config({**saved, **readdress})
+                self.save_settings(moved)
+                if moved["url"] != saved["url"]:
+                    self._queue_announcements_locked(moved)  # Contacts learn the new URL.
             else:
                 saved = validate_config(json.loads(row[0]))
                 if any(saved[k] != config[k] for k in ("person", "listen", "url")):
@@ -151,6 +155,7 @@ class Courier(PairingMixin):
         config["contacts"].pop(name, None)
         self.save_settings(config)
         self.db.execute("DELETE FROM courier_routes WHERE contact=?", (name,))
+        self.db.execute("DELETE FROM courier_announce WHERE contact=?", (name,))
         # A pairing in progress with them ends too: its lapse would restore them.
         self.db.execute("DELETE FROM courier_offer WHERE contact=?", (name,))
         # Includes approved-but-pending inbound and pending outbound rows.

@@ -282,8 +282,9 @@ def main(argv=None, *, queue_factory=real_queue):
                 print(f"Listening on {args.listen}, reachable at {args.url}.")
                 print("The courier service was restarted." if restart_service() else
                       "If `courier.py run` is running, restart it to use the new address.")
-                print("Each contact still has your old URL: pair again with each, using "
-                      "`pair --for NAME --replace` here and their `pair LINK --replace`.")
+                print("Your contacts' couriers are told the new URL as soon as each can be reached; "
+                      "`status` shows who has not received it yet, and who must pair again because "
+                      "their courier is older.")
             elif args.command == "pair":
                 if args.link is None:
                     return invite_by_link(courier, config, args.for_person, args.replace)

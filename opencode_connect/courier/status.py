@@ -86,6 +86,8 @@ def read_state(db, now):
                                         "WHERE target LIKE 'person:%' AND state IN ('pending', 'sending') GROUP BY target")),
         "offer": next(iter(rows("courier_offer", "SELECT state, name, contact, expires FROM courier_offer "
                                                  "WHERE id=1 AND expires>?", now)), None),
+        "announce": {name: (state, error) for name, state, error in
+                     rows("courier_announce", "SELECT contact, state, last_error FROM courier_announce")},
     }
 
 
@@ -108,6 +110,15 @@ def describe_contact(name, config, state, now):
                         (state["held"].get(name), f"from {name} wait for your approval")):
         if count:
             lines.append(f"    {count} message(s) {text}.")
+    announced, reason = state["announce"].get(name, (None, None))
+    if announced == "pending":
+        lines.append(f"    Your new address has not reached {name} yet"
+                     + (f"; the last try failed: {reason.rstrip('.')}." if reason else "."))
+    elif announced:
+        lines.append(f"    {name}'s courier " + ("is older and did not take" if announced == "unsupported" else
+                                                 f"refused ({(reason or '').rstrip('.')})")
+                     + f" your new address: pair again, with `{COURIER} pair --for {name} --replace` here "
+                       "and their `pair LINK --replace`.")
     return lines
 
 
@@ -140,6 +151,9 @@ def status(config_path, *, root=None, clock=time.time, proc=Path("/proc"), wsl=N
     if answers is not None:
         lines.append(f"Listener: answering on {config['listen']}." if answers else
                      f"Listener: nothing answers on {config['listen']}; contacts' messages wait on their side.")
+        lost = None if answers else host.lost_address(config["listen"])
+        if lost:
+            lines.append("Address: " + host.moved_advice(lost))
     relays = separate_relays(proc)
     if relays:
         lines.append(f"A separate local relay runs (PID {', '.join(map(str, relays))}): it delivers this machine's "
