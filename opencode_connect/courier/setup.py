@@ -119,12 +119,27 @@ def new_config(found, wsl, allow_172):
 
 def print_firewall(choice, port, wsl):
     commands = host.firewall_commands(choice, port, wsl=wsl)
-    print("Let contacts through the firewall. Review these and run them yourself; setup changed nothing:")
+    print("Let contacts through the firewall. Review these and run them yourself; nothing here changes it:")
     for where, command in commands:
         print(f"  {where}: {command}")
     if not commands:
         print(f"  If this machine filters incoming connections, allow TCP port {port} to {choice['address']} "
               f"on {choice['interface']}, from {host.peers(choice)} only.")
+    if choice["kind"] == "VPN":
+        print(f"If the VPN has access rules (ACLs), as Tailscale and Headscale networks can, they must also allow "
+              f"TCP port {port} between this machine and each contact's, in both directions. Whoever manages "
+              "the VPN sets them; without that, pairing and messages time out although ping works.")
+
+
+def firewall_for(listen, found=None, wsl=None):
+    """Print the firewall commands for the interface that holds `listen` now, as setup does."""
+    address, port = listen_address(listen, allow_wildcard=True)
+    found = host.interface_addresses() if found is None else found
+    choice = next((row for row in found if row["address"] == address), None)
+    if choice is None:
+        print(host.moved_advice(address))
+    else:
+        print_firewall(choice, port, host.on_wsl() if wsl is None else wsl)
 
 
 def offer_service(config_path, manager):
@@ -166,12 +181,7 @@ def setup(config_path, *, allow_172=False):
             raise BridgeError("Courier configuration already exists; it was not overwritten.")
         write_config(config_path, config)
         print(f"Configuration written to {config_path}.")
-    address, port = listen_address(config["listen"], allow_wildcard=True)
-    choice = next((row for row in found if row["address"] == address), None)
-    if choice is None:
-        print(host.moved_advice(address))
-    else:
-        print_firewall(choice, port, wsl)
+    firewall_for(config["listen"], found, wsl)
     opencode, claude = host.mcp_commands()
     print("Let the agents in a project use the courier (see docs/local-messaging.md and docs/claude-code.md):")
     print(f"  OpenCode: {opencode}")

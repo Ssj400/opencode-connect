@@ -12,12 +12,12 @@ from opencode_connect.core import BridgeError
 from opencode_connect.courier.app import Courier, local_target
 from opencode_connect.courier.doctor import doctor
 from opencode_connect.courier.notify import desktop_notification
-from opencode_connect.courier.pairing import OFFER_SECONDS, is_vpn, join_offer
+from opencode_connect.courier.pairing import OFFER_SECONDS, is_vpn, join_offer, reach_advice
 from opencode_connect.courier.service import restart_service, service_command
 from opencode_connect.courier.settings import (SOCKET_TIMEOUT, clean_display, contact_url, default_config_path,
                                                interactive_confirmation, listen_address, read_config,
                                                require_terminal, write_config)
-from opencode_connect.courier.setup import setup
+from opencode_connect.courier.setup import firewall_for, setup
 from opencode_connect.courier.status import status
 from opencode_connect.courier.worker import CourierBusy, relay_worker, run_courier, stop_on_sigterm
 from opencode_connect.transports import http_json
@@ -123,11 +123,12 @@ def invite_by_link(courier, config, name, replace):
         print("The offer lapsed; nobody paired.")
         return 1
     contact = state["contact"]
-    if way_back(courier.settings()["contacts"][contact], contact):
+    card = courier.settings()["contacts"][contact]
+    if way_back(card, contact):
         print(f"Paired with {contact}, both ways.")
     else:
-        print(f"Paired with {contact}. Their courier did not answer yet, so messages to {contact} "
-              "wait until it runs.")
+        print(f"Paired with {contact}, but their courier did not answer at {card['url']}, so messages to "
+              f"{contact} wait until it can be reached. " + reach_advice(card["url"]))
     return 0
 
 
@@ -138,7 +139,9 @@ def join_by_link(courier, config, link, replace):
     seen = lambda: (courier.last_seen(name) or 0) >= start
     serve_while(courier, config, seen, WAY_BACK_SECONDS)
     print(f"{name} checked the way back: both ways work." if seen() else
-          f"{name} has not checked the way back yet; keep your courier running so that their messages arrive.")
+          f"{name}'s courier has not reached yours yet; keep your courier running so that their messages "
+          "arrive. If it never does, the VPN's access rules (ACLs) or this machine's firewall may block it: "
+          + reach_advice(config["url"]))
     return 0
 
 
@@ -282,6 +285,7 @@ def main(argv=None, *, queue_factory=real_queue):
                 print(f"Listening on {args.listen}, reachable at {args.url}.")
                 print("The courier service was restarted." if restart_service() else
                       "If `courier.py run` is running, restart it to use the new address.")
+                firewall_for(args.listen)
                 print("Your contacts' couriers are told the new URL as soon as each can be reached; "
                       "`status` shows who has not received it yet, and who must pair again because "
                       "their courier is older.")

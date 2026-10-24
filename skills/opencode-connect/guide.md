@@ -80,6 +80,11 @@ own LAN. Never on a public or shared network: messages and tokens travel as plai
 and such networks often stop devices from reaching each other anyway. On WSL, only
 mirrored networking works; setup explains how to switch.
 
+If the VPN has access rules (ACLs), as Tailscale and Headscale networks can, they must
+allow the courier's TCP port (8765 by default) between the two machines, **in both
+directions**. Whoever manages the VPN changes them; until then, `ping` works but
+pairing times out.
+
 Each person, on their own machine:
 
 1. **Set up:** `python3 bin/courier.py setup` (menu 1).
@@ -117,7 +122,8 @@ log then say that the address is not on this machine and list the current ones.
   own as soon as the IP returns.
 - **If the address really changed,** the user chooses menu 7, "Change this machine's
   address", or runs `python3 bin/courier.py address --listen IP:PORT --url http://IP:PORT`.
-  It asks for a code and restarts the service.
+  It asks for a code, restarts the service, and prints the firewall command for the
+  new interface, which the user runs.
 - **Contacts learn the new URL by themselves:** this courier tells each contact's courier,
   as soon as each can be reached. `status` shows who has not received it yet. A contact
   whose courier is older, or that refused it, needs pairing again:
@@ -155,6 +161,7 @@ Details and the security model: [federated messaging](../../docs/multi-person.md
 | `status` says nothing answers on the listener | The VPN is down or the service stopped | `tailscale status`; `python3 bin/courier.py service status` and `service logs` |
 | `status` says the address is not an address of this machine | The IP changed, or its VPN is down | "When this machine's address changes" above: wait, or menu 7 |
 | A contact's messages stopped arriving after they moved | Their courier is older or told this one nothing yet | They run `status`; if needed, pair again with `--replace` |
+| `ping` to the other machine answers, but `pair` times out | The VPN's access rules (ACLs) or a firewall block the courier's port | Ask whoever manages the VPN to allow that TCP port between both machines, both ways; check each firewall |
 | `pair` fails or waits | Firewall, VPN, or an expired link | From the other machine, `curl -s -o /dev/null -w '%{http_code}\n' http://ADDRESS:PORT/v1/whoami` should print 401; a new `pair` gives a new link |
 | A contact's messages are "held with no destination" | No route for that contact | Menu 4 |
 | "The local queue belongs to node X" | The terminal uses another node name | Set `OPENCODE_CONNECT_LOCAL_NODE` as the message says |
