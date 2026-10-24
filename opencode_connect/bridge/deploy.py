@@ -77,6 +77,8 @@ FILES = (
     "opencode_connect/courier/notify.py",
     "opencode_connect/courier/pairing.py",
     "opencode_connect/courier/moves.py",
+    "opencode_connect/courier/outbound.py",
+    "opencode_connect/courier/pairflow.py",
     "opencode_connect/courier/doctor.py",
     "opencode_connect/courier/host.py",
     "opencode_connect/courier/setup.py",

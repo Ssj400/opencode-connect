@@ -114,7 +114,7 @@ class MoveTests(unittest.TestCase):
     def test_messages_waiting_for_a_contact_go_to_its_new_url(self):
         self.moved().announce_once()
         self.bob.queue.enqueue("wsl:ses_example", "person:alice", "hello")
-        with patch("opencode_connect.courier.app.http_json", side_effect=BridgeError("Offline.")) as http:
+        with patch("opencode_connect.courier.outbound.http_json", side_effect=BridgeError("Offline.")) as http:
             self.bob.send_once()
         self.assertTrue(http.call_args.args[0].startswith(NEW + "/"))
 

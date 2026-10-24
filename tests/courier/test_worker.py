@@ -42,7 +42,7 @@ class WorkerLoopTests(unittest.TestCase):
         serve_until(worker, server, stop, until=lambda: next(done))
         self.assertEqual(len(ticks), 2)
         self.assertEqual(worker.tidy.call_count, 2)
-        self.assertEqual(worker.announce_once.call_count, 2)
+        self.assertEqual(worker.chores_once.call_count, 2)
 
     def test_a_failing_tick_is_logged_and_the_worker_keeps_going(self):
         stop, server, worker, ticks = self.loop(3, send_once=[sqlite3.OperationalError("database is locked"), 0, 0])
@@ -65,6 +65,31 @@ class WorkerLoopTests(unittest.TestCase):
         server.handle_request.assert_not_called()
         stop.set()  # A relay that ended because of a stop request is not a failure.
         serve_until(worker, server, stop, healthy=lambda: False)
+
+
+class ChoreTests(unittest.TestCase):
+    def test_one_background_task_runs_per_tick_in_turn(self):
+        with tempfile.TemporaryDirectory(prefix="courier-chores-") as folder:
+            queue = FakeQueue(Path(folder) / "queue.sqlite3")
+            self.addCleanup(queue.db.close)
+            app = Courier(queue, configuration())
+            calls = []
+
+            def job(name, result):
+                def run():
+                    calls.append(name)
+                    return result
+                return run
+
+            app.CHORES = ("first", "second")
+            app.first, app.second = job("first", None), job("second", "done")
+            self.assertEqual(app.chores_once(), "second")  # The first had nothing to do.
+            app.first = job("first", "done")
+            self.assertEqual(app.chores_once(), "first")  # After the second, the first again.
+            self.assertEqual(app.chores_once(), "second")
+            self.assertEqual(calls, ["first", "second", "first", "second"])
+            app.first, app.second = job("first", None), job("second", None)
+            self.assertIsNone(app.chores_once())
 
 
 class CourierRunTests(unittest.TestCase):

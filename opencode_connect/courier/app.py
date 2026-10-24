@@ -12,17 +12,15 @@ import time
 
 from opencode_connect.core import BridgeError
 from opencode_connect.courier.moves import ANNOUNCE_TABLE, AddressMixin
+from opencode_connect.courier.outbound import OutboundMixin
 from opencode_connect.courier.pairing import PairingMixin
-from opencode_connect.courier.settings import (SOCKET_TIMEOUT, TOKEN, RequestError, clean_display, person, validate_card,
-                                               validate_config, write_config)
-from opencode_connect.transports import HttpError, http_json, short_text
+from opencode_connect.courier.settings import (MESSAGE, RETENTION, TOKEN, RequestError, clean_display,
+                                               person, validate_card, validate_config, write_config)
+from opencode_connect.transports import short_text
 
 MAX_TEXT = 12000
 RATE = 60
 HELD_LIMIT = 100
-RETENTION = 7 * 24 * 60 * 60
-MESSAGE = re.compile(r"msg_[a-f0-9]{32}\Z")
-TERMINAL = {"approved", "rejected", "expired"}
 # Messages a `direct` contact may deliver per hour without approval: each one can
 # start an agent and use model quota, so the rest wait for a person.
 DIRECT_PER_HOUR = 20
@@ -40,7 +38,7 @@ def local_target(target):
     return target
 
 
-class Courier(PairingMixin, AddressMixin):
+class Courier(PairingMixin, AddressMixin, OutboundMixin):
     """Application logic over an injected local queue sharing one SQLite transaction.
 
     The queue exposes db, transaction(), claim(prefix), mark(), release(),
@@ -56,6 +54,7 @@ class Courier(PairingMixin, AddressMixin):
         self.notify = notify or (lambda name: None)
         self.config_path = Path(config_path) if config_path is not None else None
         self.lock = threading.RLock()
+        self.chore = 0  # Which background task the next tick tries first.
         validate_config(config)
         with self.transaction():
             for statement in (
@@ -339,6 +338,19 @@ class Courier(PairingMixin, AddressMixin):
             self.queue.reject_inbound(message_id, reason="Retention expired.")
             self.db.execute("UPDATE courier_inbound SET state='expired' WHERE id=?", (message_id,))
 
+    # Background network tasks, at most one per tick, so that a slow contact keeps
+    # the listener waiting at most once per tick.
+    CHORES = ("announce_once",)
+
+    def chores_once(self):
+        """Run the first background task, in turn, that had something to do."""
+        for offset in range(len(self.CHORES)):
+            index = (self.chore + offset) % len(self.CHORES)
+            if getattr(self, self.CHORES[index])() is not None:
+                self.chore = (index + 1) % len(self.CHORES)
+                return self.CHORES[index]
+        return None
+
     def tidy(self):
         """Per-tick upkeep: expire held messages, and a pairing offer that lapsed."""
         with self.transaction():
@@ -398,124 +410,3 @@ class Courier(PairingMixin, AddressMixin):
                 raise BridgeError("Only a held message can be rejected.")
             self.queue.reject_inbound(message_id, reason="Rejected by operator.")
             self.db.execute("UPDATE courier_inbound SET state='rejected' WHERE id=?", (message_id,))
-
-    def send_once(self):
-        # The queue claim and retry metadata commit together. Requests already in
-        # flight cannot be retracted by another process revoking this contact.
-        with self.lock:
-            # Claiming and releasing uploads that still wait for their retry would write
-            # on every tick: read first, and claim only when something is due.
-            waiting = self.db.execute("SELECT count(*) FROM courier_sent WHERE state='retry' AND next_attempt>?",
-                                      (self.clock(),)).fetchone()[0]
-            if self.queue.pending_count("person:") <= waiting:
-                return None
-            with self.transaction():
-                deferred = []
-                while True:
-                    job = self.queue.claim("person:")
-                    if job is None:
-                        break
-                    previous = self.db.execute("SELECT next_attempt FROM courier_sent WHERE id=?", (job["id"],)).fetchone()
-                    if previous and previous[0] > self.clock():
-                        deferred.append(job["id"])
-                        continue
-                    break
-                for message_id in deferred:
-                    self.queue.release(message_id)
-                if job is None:
-                    return None
-                name = person(job["target"][7:])
-                if job["source"].startswith("person:"):
-                    self.queue.mark(job["id"], "failed", {"reason": "Automatic person forwarding is forbidden."})
-                    return job["id"]
-                config = self.settings()
-                card = config["contacts"].get(name)
-                if card is None:
-                    self.queue.mark(job["id"], "failed", {"reason": "No trusted contact card."})
-                    return job["id"]
-                self.db.execute("""INSERT OR IGNORE INTO courier_sent(id,contact,source,state)
-                                   VALUES(?,?,?,'sending')""", (job["id"], name, job["source"]))
-                self.db.execute("UPDATE courier_sent SET state='sending' WHERE id=?", (job["id"],))
-            payload = {"text": job["payload"]["text"], "idempotency_key": job["id"]}
-            if job["payload"].get("reply_to") is not None:
-                payload["reply_to"] = job["payload"]["reply_to"]
-            try:
-                result = http_json(card["url"] + "/v1/messages", method="POST", data=payload,
-                                   headers={"Authorization": "Bearer " + card["token"]}, timeout=SOCKET_TIMEOUT)
-                if (not isinstance(result, dict) or not isinstance(result.get("id"), str)
-                        or not MESSAGE.fullmatch(result["id"]) or result.get("state") not in {"held", *TERMINAL}):
-                    raise BridgeError("Invalid remote receipt.")
-            except BridgeError as exc:
-                with self.transaction():
-                    if name not in self.settings()["contacts"]:
-                        self.queue.mark(job["id"], "cancelled", {"reason": "Contact revoked during request."})
-                        self.db.execute("UPDATE courier_sent SET state='cancelled' WHERE id=?", (job["id"],))
-                        return job["id"]
-                    self.note_peer(name, error=exc)
-                    created = job.get("created")
-                    if isinstance(exc, HttpError) and exc.status < 500 and exc.status not in {408, 429}:
-                        self.queue.mark(job["id"], "failed", {"reason": str(exc)})
-                        self.db.execute("UPDATE courier_sent SET state='failed' WHERE id=?", (job["id"],))
-                    elif created is not None and self.clock() - created > RETENTION:
-                        # Kept trying as long as an inbound message waits for approval.
-                        self.queue.mark(job["id"], "failed",
-                                        {"reason": f"Unreachable for {RETENTION // 86400} days: {exc}"})
-                        self.db.execute("UPDATE courier_sent SET state='failed' WHERE id=?", (job["id"],))
-                    else:
-                        attempts = self.db.execute("SELECT attempts FROM courier_sent WHERE id=?", (job["id"],)).fetchone()[0] + 1
-                        delay = min(300, 2 ** min(attempts, 9))
-                        self.db.execute("UPDATE courier_sent SET state='retry',attempts=?,next_attempt=? WHERE id=?",
-                                        (attempts, self.clock() + delay, job["id"]))
-                        self.queue.release(job["id"])
-                return job["id"]
-            with self.transaction():
-                self.queue.mark(job["id"], "delivered", {"remote_id": result["id"], "state": result["state"]})
-                self.db.execute("UPDATE courier_sent SET remote_id=?,state=?,next_attempt=? WHERE id=?",
-                                (result["id"], result["state"], self.clock() + 60, job["id"]))
-                self.note_peer(name)
-            return job["id"]
-
-    def recover_outbound(self):
-        """Recover only our idempotent HTTP claims, after obtaining the worker lock."""
-        with self.transaction():
-            for message_id, name in self.db.execute("SELECT id,contact FROM courier_sent WHERE state='sending'").fetchall():
-                row = self.queue.get(message_id)
-                if row is None or row["state"] != "sending" or row["target"] != "person:" + name:
-                    continue
-                if name not in self.settings()["contacts"]:
-                    self.queue.mark(message_id, "cancelled", {"reason": "Contact revoked."})
-                    self.db.execute("UPDATE courier_sent SET state='cancelled' WHERE id=?", (message_id,))
-                else:
-                    self.queue.release(message_id)
-                    self.db.execute("UPDATE courier_sent SET state='retry',next_attempt=? WHERE id=?",
-                                    (self.clock(), message_id))
-
-    def poll_once(self):
-        with self.lock:
-            # At most one bounded network probe per event-loop tick, so a large
-            # backlog or offline peer cannot starve the inbound HTTP listener.
-            rows = self.db.execute("SELECT id,contact,remote_id FROM courier_sent WHERE state='held' AND next_attempt<=? "
-                                   "ORDER BY next_attempt,id LIMIT 1",
-                                   (self.clock(),)).fetchall()
-            for message_id, name, remote_id in rows:
-                card = self.settings()["contacts"].get(name)
-                if card is None:
-                    # A removed contact's receipt cannot be polled; move it back so it
-                    # never stays first in line and starves every other receipt.
-                    with self.transaction():
-                        self.db.execute("UPDATE courier_sent SET next_attempt=? WHERE id=?",
-                                        (self.clock() + 60, message_id))
-                    continue
-                state, error = "held", None
-                try:
-                    result = http_json(card["url"] + "/v1/messages/" + remote_id,
-                                       headers={"Authorization": "Bearer " + card["token"]}, timeout=SOCKET_TIMEOUT)
-                    if (isinstance(result, dict) and result.get("id") == remote_id
-                            and result.get("state") in {"held", *TERMINAL}):
-                        state = result["state"]
-                except BridgeError as exc:
-                    error = exc
-                with self.transaction():
-                    self.db.execute("UPDATE courier_sent SET state=?,next_attempt=? WHERE id=?",
-                                    (state, self.clock() + 60, message_id))
-                    self.note_peer(name, error=error)

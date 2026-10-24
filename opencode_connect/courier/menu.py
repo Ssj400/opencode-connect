@@ -175,7 +175,7 @@ def addresses():
     for row in rows:
         print(clean_display("  " + describe(row)))
     if not rows:
-        print("No sessions found: open OpenCode or Claude Code in a connected project first (7).")
+        print("No sessions found: open OpenCode or Claude Code in a connected project first (8).")
 
 
 def run_menu(config_path, queue_factory):

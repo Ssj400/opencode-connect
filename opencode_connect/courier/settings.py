@@ -19,6 +19,11 @@ from opencode_connect.core import BridgeError
 SOCKET_TIMEOUT = 3
 PERSON = re.compile(r"[a-z][a-z0-9_-]{0,63}\Z")
 TOKEN = re.compile(r"[A-Za-z0-9_-]{43,128}\Z")
+MESSAGE = re.compile(r"msg_[a-f0-9]{32}\Z")
+# A receipt state that no longer changes.
+TERMINAL = {"approved", "rejected", "expired"}
+# How long an inbound message stays held, and an upload keeps being retried.
+RETENTION = 7 * 24 * 60 * 60
 
 
 class RequestError(BridgeError):

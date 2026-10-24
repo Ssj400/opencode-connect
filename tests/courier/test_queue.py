@@ -61,7 +61,7 @@ class RealQueueCourierTests(unittest.TestCase):
             root=self.a_root, node="wsl")
         def receive_at_bob(url, **kwargs):
             return self.bob.receive(kwargs["headers"]["Authorization"], kwargs["data"])
-        with patch("opencode_connect.courier.app.http_json", side_effect=receive_at_bob):
+        with patch("opencode_connect.courier.outbound.http_json", side_effect=receive_at_bob):
             self.alice.send_once()
         receipt = json.loads(self.a_box.get(outgoing["id"])["result"])
         self.assertEqual(receipt["state"], "held")
@@ -78,7 +78,7 @@ class RealQueueCourierTests(unittest.TestCase):
             "_meta": {"ai.opencode/sessionID": "ses_example"}}, root=self.b_root, node="linux")
         def receive_at_alice(url, **kwargs):
             return self.alice.receive(kwargs["headers"]["Authorization"], kwargs["data"])
-        with patch("opencode_connect.courier.app.http_json", side_effect=receive_at_alice):
+        with patch("opencode_connect.courier.outbound.http_json", side_effect=receive_at_alice):
             self.bob.send_once()
         inbound = self.alice.inbox()[0]
         self.assertEqual(inbound["suggested_target"], "wsl:ses_example")
@@ -100,7 +100,7 @@ class RealQueueCourierTests(unittest.TestCase):
         question = self.claude("send", "toolu_ask", to="person:bob", text="Which tests cover pairing?")
         def receive_at_bob(url, **kwargs):
             return self.bob.receive(kwargs["headers"]["Authorization"], kwargs["data"])
-        with patch("opencode_connect.courier.app.http_json", side_effect=receive_at_bob):
+        with patch("opencode_connect.courier.outbound.http_json", side_effect=receive_at_bob):
             self.alice.send_once()
         receipt = json.loads(self.a_box.get(question["id"])["result"])
         self.bob.approve(receipt["remote_id"], "linux:ses_example")
@@ -112,7 +112,7 @@ class RealQueueCourierTests(unittest.TestCase):
             "_meta": {"ai.opencode/sessionID": "ses_example"}}, root=self.b_root, node="linux")
         def receive_at_alice(url, **kwargs):
             return self.alice.receive(kwargs["headers"]["Authorization"], kwargs["data"])
-        with patch("opencode_connect.courier.app.http_json", side_effect=receive_at_alice):
+        with patch("opencode_connect.courier.outbound.http_json", side_effect=receive_at_alice):
             self.bob.send_once()
         inbound = self.alice.inbox()[0]
         self.assertEqual(inbound["suggested_target"], CLAUDE)  # The session that asked.
@@ -127,7 +127,7 @@ class RealQueueCourierTests(unittest.TestCase):
     def test_uploads_fail_after_the_retention_period_and_retry_before_it(self):
         young = self.a_box.enqueue("ses_example", "person:bob", "Still worth trying")["id"]
         self.now = time.time()
-        with patch("opencode_connect.courier.app.http_json", side_effect=BridgeError("HTTP request failed (TimeoutError).")):
+        with patch("opencode_connect.courier.outbound.http_json", side_effect=BridgeError("HTTP request failed (TimeoutError).")):
             self.alice.send_once()
             self.assertEqual(self.a_box.get(young)["state"], "pending")
             self.now = time.time() + RETENTION + 10
@@ -142,7 +142,7 @@ class RealQueueCourierTests(unittest.TestCase):
         for status, state in ((401, "failed"), (429, "pending"), (503, "pending")):
             with self.subTest(status=status):
                 sent[status] = self.a_box.enqueue("ses_example", "person:bob", f"Answered {status}")["id"]
-                with patch("opencode_connect.courier.app.http_json", side_effect=HttpError(status, "Example reason.")):
+                with patch("opencode_connect.courier.outbound.http_json", side_effect=HttpError(status, "Example reason.")):
                     self.alice.send_once()
                 self.assertEqual(self.a_box.get(sent[status])["state"], state)
         self.assertEqual(json.loads(self.a_box.get(sent[401])["result"])["reason"],
@@ -175,7 +175,7 @@ class RealQueueCourierTests(unittest.TestCase):
         def receive_then_crash(url, **kwargs):
             self.bob.receive(kwargs["headers"]["Authorization"], kwargs["data"])
             raise RuntimeError("Simulated crash after remote acceptance.")
-        with patch("opencode_connect.courier.app.http_json", side_effect=receive_then_crash), self.assertRaises(RuntimeError):
+        with patch("opencode_connect.courier.outbound.http_json", side_effect=receive_then_crash), self.assertRaises(RuntimeError):
             self.alice.send_once()
         self.assertEqual(self.a_box.get(job["id"])["state"], "sending")
         # Reopen the worker connection to exercise persistent metadata, not memory.
@@ -183,7 +183,7 @@ class RealQueueCourierTests(unittest.TestCase):
         self.addCleanup(recovered_box.db.close)
         recovered = Courier(recovered_box, configuration("alice"), clock=lambda: self.now)
         recovered.recover_outbound()
-        with patch("opencode_connect.courier.app.http_json", side_effect=lambda url, **kw: self.bob.receive(
+        with patch("opencode_connect.courier.outbound.http_json", side_effect=lambda url, **kw: self.bob.receive(
                 kw["headers"]["Authorization"], kw["data"])):
             recovered.send_once()
         self.assertEqual(self.a_box.get(job["id"])["state"], "delivered")

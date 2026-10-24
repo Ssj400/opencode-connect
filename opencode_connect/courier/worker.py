@@ -46,7 +46,7 @@ def serve_until(courier, server, stop, *, backoff=lambda failures: min(30, 2 ** 
             server.handle_request()
             courier.send_once()
             courier.poll_once()
-            courier.announce_once()
+            courier.chores_once()
             courier.tidy()
             failures = 0
         except (BridgeError, OSError, sqlite3.Error) as exc:
