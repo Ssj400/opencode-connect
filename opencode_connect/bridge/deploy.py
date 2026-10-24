@@ -26,6 +26,7 @@ FILES = (
     "docs/architecture.md",
     "examples/opencode.jsonc.example",
     "skills/opencode-connect/SKILL.md",
+    "skills/opencode-connect/guide.md",
     "tools/__init__.py",
     "tools/audit_public.py",
     # Delivery core and adapters
