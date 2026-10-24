@@ -249,6 +249,18 @@ class PairingTests(unittest.TestCase):
             join_offer(self.bob, f"{self.alice_url}#{code}")
         self.assertEqual(self.bob.contacts(), [])
 
+    def test_an_unreachable_inviter_says_what_to_check_and_nothing_is_stored(self):
+        before = list(self.bob.db.iterdump())
+        with patch("opencode_connect.courier.pairing.http_json",
+                   side_effect=BridgeError("HTTP request failed (TimeoutError).")), \
+                self.assertRaises(BridgeError) as caught:
+            join_offer(self.bob, f"{self.alice_url}#ABCD-EFGH-JKMN", attempts=1, wait=0)
+        self.assertNotIsInstance(caught.exception, HttpError)
+        for text in (f"No answer from {self.alice_url}: HTTP request failed (TimeoutError).", "access rules (ACLs)",
+                     f"TCP port {self.alice_url.rsplit(':', 1)[1]}", f"{self.alice_url}/v1/whoami"):
+            self.assertIn(text, str(caught.exception))
+        self.assertEqual(list(self.bob.db.iterdump()), before)
+
     def test_the_joiner_stores_nothing_from_a_courier_that_does_not_know_the_code(self):
         impostor = {"person": "alice", "url": self.alice_url, "token": "E" * 43}
         before = list(self.bob.db.iterdump())
@@ -308,8 +320,9 @@ class PairingCliTests(unittest.TestCase):
         self.addCleanup(queue.db.close)
         return Courier(queue, read_config(self.path))
 
-    def test_the_inviter_prints_a_link_waits_for_the_service_and_checks_the_way_back(self):
-        output, answered = io.StringIO(), []
+    def joiner_pairs_through_the_service(self, output):
+        """A `time.sleep` stand-in during which bob joins through the service, once."""
+        answered = []
 
         def service_answers(seconds):
             if answered:
@@ -321,8 +334,12 @@ class PairingCliTests(unittest.TestCase):
                                    "mac": seal(pairing_key(code), b"join", "a" * 32, card)}, "192.0.2.20")
             answered.append(service.confirm_pairing("Bearer " + answer["card"]["token"], {"nonce": "a" * 32}))
 
+        return service_answers
+
+    def test_the_inviter_prints_a_link_waits_for_the_service_and_checks_the_way_back(self):
+        output = io.StringIO()
         with patch("opencode_connect.courier.cli.run_courier", side_effect=CourierBusy("busy")), \
-                patch("opencode_connect.courier.cli.time.sleep", side_effect=service_answers), \
+                patch("opencode_connect.courier.cli.time.sleep", side_effect=self.joiner_pairs_through_the_service(output)), \
                 patch("opencode_connect.courier.cli.http_json", return_value={"person": "bob", "protocol": 1}) as probe:
             result, text = self.main("pair", "--for", "bob", output=output)
         self.assertEqual(result, 0, text)
@@ -333,6 +350,16 @@ class PairingCliTests(unittest.TestCase):
         other = self.other()
         self.assertIsNone(other.offer_state())
         self.assertEqual([row["person"] for row in other.contacts()], ["bob"])
+
+    def test_an_inviter_that_cannot_reach_the_joiner_says_what_to_check(self):
+        output = io.StringIO()
+        with patch("opencode_connect.courier.cli.run_courier", side_effect=CourierBusy("busy")), \
+                patch("opencode_connect.courier.cli.time.sleep", side_effect=self.joiner_pairs_through_the_service(output)), \
+                patch("opencode_connect.courier.cli.http_json", side_effect=BridgeError("HTTP request failed (TimeoutError).")):
+            result, text = self.main("pair", output=output)
+        self.assertEqual(result, 0, text)
+        self.assertIn("Paired with bob, but their courier did not answer at http://192.0.2.20:8765", text)
+        self.assertIn("access rules (ACLs) allow TCP port 8765", text)
 
     def test_an_interrupted_offer_is_withdrawn_with_its_unconfirmed_pairing(self):
         output = io.StringIO()
@@ -382,6 +409,12 @@ class PairingCliTests(unittest.TestCase):
         result, text = self.main("pair", "http://192.0.2.20:8765#ABCD-EFGH-JKMN", "--for", "bob")
         self.assertEqual(result, 1)
         self.assertIn("--for", text)
+        with patch("opencode_connect.courier.cli.join_offer", return_value="bob"), \
+                patch("opencode_connect.courier.cli.serve_while"):  # bob's way back never arrives.
+            result, text = self.main("pair", "http://192.0.2.20:8765#ABCD-EFGH-JKMN")
+        self.assertEqual(result, 0, text)
+        self.assertIn("bob's courier has not reached yours yet", text)
+        self.assertIn("/v1/whoami` prints 401", text)  # The check to run, toward this courier.
 
 
 if __name__ == "__main__":

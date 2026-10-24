@@ -185,6 +185,7 @@ class SetupTests(unittest.TestCase):
         install.assert_called_once_with(self.path)
         self.assertLess(output.index(f"1. {VPN} on xsred0 (VPN)"), output.index(f"2. {LAN} on wlan0 (LAN"))
         self.assertIn("other devices on this network could read", output)
+        self.assertNotIn("access rules", output)  # A LAN address has none.
         self.assertNotIn(DOCKER, output)
         for text in (f"sudo ufw allow in on wlan0 from {ipv4(192, 168, 1, 0)}/24 to {LAN} port 8765",
                      "local_bridge -- python3", "claude mcp add opencode_connect", "Linger is off",
@@ -230,6 +231,7 @@ class SetupTests(unittest.TestCase):
                                                            bind=[OSError(98, "Address already in use"), None])
         self.assertEqual((result, read_config(self.path)["listen"]), (0, f"{VPN}:9001"))
         self.assertIn("Address already in use", output)
+        self.assertIn("access rules (ACLs)", output)  # A VPN address: its rules must allow the port.
         self.assertEqual(can_bind.call_count, 2)
 
     def test_a_port_in_use_cannot_be_bound(self):

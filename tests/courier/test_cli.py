@@ -209,9 +209,11 @@ class AddressTests(unittest.TestCase):
     def main(self, *arguments):
         with patch("opencode_connect.courier.cli.interactive_confirmation") as confirm, \
                 patch("opencode_connect.courier.cli.restart_service", return_value=True) as restart, \
+                patch("opencode_connect.courier.cli.firewall_for") as firewall, \
                 patch("sys.stdout", new_callable=io.StringIO) as output, \
                 patch("sys.stderr", new_callable=io.StringIO) as errors:
             result = main(["--config", str(self.path), *arguments], queue_factory=lambda path: FakeQueue(self.database))
+        self.firewall = firewall
         return result, output.getvalue() + errors.getvalue(), confirm, restart
 
     def stored(self):
@@ -229,6 +231,7 @@ class AddressTests(unittest.TestCase):
             self.assertEqual((config["person"], config["listen"], config["url"]),
                              ("bob", "192.0.2.20:9000", "http://192.0.2.20:9000"))
         restart.assert_called_once_with()
+        self.firewall.assert_called_once_with("192.0.2.20:9000")  # The rule for the new interface.
         self.assertIn("restarted", output)
         self.assertIn("told the new URL", output)
 
