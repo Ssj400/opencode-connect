@@ -39,7 +39,7 @@ python3 -B tools/audit_public.py
 ```
 
 The quickest way is the courier's menu: run `python3 bin/courier.py` in a terminal and
-choose "Connect a project's OpenCode and Claude Code". For the project folder you give
+choose "Connect a project's sessions (OpenCode and Claude Code)". For the project folder you give
 it, it shows what is missing and, after one confirmation code, adds the server below,
 merges the hooks and deny rules into `.claude/settings.local.json` without removing
 anything there, and keeps that file out of Git in `.git/info/exclude`. By hand:

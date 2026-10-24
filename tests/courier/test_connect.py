@@ -52,8 +52,9 @@ class ConnectTests(unittest.TestCase):
         environment.start()
         self.addCleanup(environment.stop)
 
-    def connect(self, system, *, confirm=None, which=("opencode", "claude", "git")):
+    def connect(self, system, *, confirm=None, which=("opencode", "claude", "git"), relay="the courier's service"):
         with patch("opencode_connect.courier.connect.subprocess.run", system), \
+                patch("opencode_connect.courier.connect.relay_status", return_value=relay), \
                 patch("opencode_connect.courier.connect.shutil.which",
                       side_effect=lambda name: f"/usr/bin/{name}" if name in which else None), \
                 patch("opencode_connect.courier.connect.interactive_confirmation", side_effect=confirm) as code, \
@@ -147,6 +148,32 @@ class ConnectTests(unittest.TestCase):
         self.assertNotIn("\x1b", str(caught.exception))
         self.assertEqual([command[0] for command in system.changes()], ["opencode"])
         self.assertFalse(self.settings.exists())
+
+    def test_it_says_what_delivers_to_opencode_sessions_or_how_to_start_it(self):
+        _, output, _ = self.connect(FakeHarnesses(opencode=True, claude=True, ignored=True))
+        self.assertIn("delivered by the courier's service", output)
+        os.environ["OPENCODE_CONNECT_LOCAL_NODE"] = "wsl"
+        _, output, _ = self.connect(FakeHarnesses(opencode=True, claude=True, ignored=True), relay=None)
+        self.assertIn(f"env OPENCODE_CONNECT_LOCAL_NODE=wsl python3 {ROOT}/bin/local_bridge.py relay", output)
+        self.assertIn("model quota", output)
+
+    def test_the_relay_is_found_as_a_service_or_a_process_without_changing_anything(self):
+        unit = self.root / "unit.service"
+        unit.write_text("[Unit]\n")
+        with patch("opencode_connect.courier.connect.unit_path", return_value=unit), \
+                patch("opencode_connect.courier.connect.command_output", return_value="active") as systemctl, \
+                patch("opencode_connect.courier.connect.separate_relays", return_value=[]), \
+                patch("opencode_connect.courier.connect.courier_relays", return_value=[]):
+            self.assertEqual(connect.relay_status(), "the courier's service")
+            systemctl.assert_called_once_with(["systemctl", "--user", "is-active", "opencode-connect-courier.service"])
+            systemctl.return_value = "inactive"
+            self.assertIsNone(connect.relay_status())
+        with patch("opencode_connect.courier.connect.unit_path", return_value=self.root / "missing.service"), \
+                patch("opencode_connect.courier.connect.command_output") as systemctl, \
+                patch("opencode_connect.courier.connect.separate_relays", return_value=[]), \
+                patch("opencode_connect.courier.connect.courier_relays", return_value=[4242]):
+            self.assertEqual(connect.relay_status(), "courier.py run --relay")
+        systemctl.assert_not_called()
 
     def test_the_generated_settings_are_the_documented_example(self):
         example = (ROOT / "examples/claude-settings.local.json.example").read_text()

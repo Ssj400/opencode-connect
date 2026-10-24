@@ -23,7 +23,7 @@ opencode mcp add local_bridge -- env OPENCODE_CONNECT_LOCAL_NODE=wsl python3 /sr
 ```
 
 The courier's menu does this for you: run `python3 bin/courier.py` in a terminal and choose
-"Connect a project's OpenCode and Claude Code"; it adds the server only if the project
+"Connect a project's sessions (OpenCode and Claude Code)"; it adds the server only if the project
 lacks it, after one confirmation code, and passes this terminal's queue variables with
 `--env`.
 

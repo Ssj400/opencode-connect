@@ -29,9 +29,8 @@ def ago(seconds):
     return f"{int(seconds // 86400)} days ago"
 
 
-def separate_relays(proc=Path("/proc")):
-    """PIDs of this user's `local_bridge.py relay` processes. While one runs, the relay
-    of a courier started with --relay, such as the service's, waits for it to stop."""
+def processes(matches, proc=Path("/proc")):
+    """PIDs of this user's processes whose argument list `matches`."""
     found = []
     try:
         entries = list(proc.iterdir())
@@ -44,9 +43,21 @@ def separate_relays(proc=Path("/proc")):
             argv = (entry / "cmdline").read_bytes().split(b"\0")
         except OSError:
             continue  # It ended while it was read.
-        if b"relay" in argv and any(arg.endswith(b"local_bridge.py") for arg in argv):
+        if matches(argv):
             found.append(int(entry.name))
     return sorted(found)
+
+
+def separate_relays(proc=Path("/proc")):
+    """PIDs of this user's `local_bridge.py relay` processes. While one runs, the relay
+    of a courier started with --relay, such as the service's, waits for it to stop."""
+    return processes(lambda argv: b"relay" in argv and any(arg.endswith(b"local_bridge.py") for arg in argv), proc)
+
+
+def courier_relays(proc=Path("/proc")):
+    """PIDs of this user's `courier.py run --relay` processes, such as the service's."""
+    return processes(lambda argv: b"run" in argv and b"--relay" in argv
+                     and any(arg.endswith(b"courier.py") for arg in argv), proc)
 
 
 def read_state(db, now):

@@ -16,8 +16,10 @@ import tempfile
 
 from opencode_connect.config import ROOT
 from opencode_connect.core import BridgeError
-from opencode_connect.courier.host import claude_mcp_add, opencode_mcp_add, queue_variables
+from opencode_connect.courier.host import claude_mcp_add, command_output, opencode_mcp_add, queue_variables
+from opencode_connect.courier.service import SERVICE, unit_path
 from opencode_connect.courier.settings import clean_display, interactive_confirmation
+from opencode_connect.courier.status import courier_relays, separate_relays
 from opencode_connect.local.mailbox import state_path
 from opencode_connect.transports import short_text
 
@@ -128,6 +130,31 @@ def applied(command, project):
                           f"{short_text(' '.join(result.stderr.split())) or 'status ' + str(result.returncode)}")
 
 
+def relay_status():
+    """What delivers this machine's queue to OpenCode sessions, or None. Reads only."""
+    if (not unit_path().is_symlink() and unit_path().is_file()
+            and command_output(["systemctl", "--user", "is-active", SERVICE]) == "active"):
+        return "the courier's service"
+    if separate_relays():
+        return "a local_bridge.py relay"
+    if courier_relays():
+        return "courier.py run --relay"
+    return None
+
+
+def relay_advice():
+    who = relay_status()
+    if who:
+        print(f"Messages to OpenCode sessions here are delivered by {who}.")
+        return
+    relay = shlex.join([*(["env", *queue_variables()] if queue_variables() else []),
+                        "python3", str(ROOT / "bin/local_bridge.py"), "relay"])
+    print("Nothing delivers messages to OpenCode sessions on this machine yet: they wait in the queue. "
+          f"Keep `{relay}` open in a terminal, or set up the courier (menu 1) and install its service, "
+          "which runs the relay from login. Delivering a message can start an agent and use model quota. "
+          "Claude Code sessions need neither: their hooks pick up their messages.")
+
+
 def connect_project(project):
     """Show what the project lacks, ask for one code, then add it. 0 when done."""
     project = Path(project).expanduser().resolve()
@@ -154,6 +181,7 @@ def connect_project(project):
                           lambda: exclude_from_git(project)))
     if not steps:
         print("This project is already connected.")
+        relay_advice()
         return 0
     print(clean_display(f"To connect {project}:"))
     for description, _ in steps:
@@ -163,5 +191,8 @@ def connect_project(project):
         action()
         print(clean_display("Done: " + description))
     print("Restart OpenCode in this project, and start a new Claude Code session there (or reconnect "
-          "the server in /mcp). Ask each one for whoami to get its address.")
+          "the server in /mcp). Sessions in connected projects can then message each other, OpenCode or "
+          "Claude Code: ask one to message another by its title, or give it an address from the menu's "
+          "\"Show session addresses\".")
+    relay_advice()
     return 0

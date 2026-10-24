@@ -28,7 +28,7 @@ MENU = """\
   5. Remove a contact
   6. Status
  Sessions on this machine
-  7. Connect a project's OpenCode and Claude Code
+  7. Connect a project's sessions (OpenCode and Claude Code)
   8. Show session addresses
   0. Exit"""
 TYPE_ADDRESS = "Type an address"
