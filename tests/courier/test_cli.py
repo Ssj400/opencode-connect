@@ -230,7 +230,7 @@ class AddressTests(unittest.TestCase):
                              ("bob", "192.0.2.20:9000", "http://192.0.2.20:9000"))
         restart.assert_called_once_with()
         self.assertIn("restarted", output)
-        self.assertIn("old URL", output)
+        self.assertIn("told the new URL", output)
 
     def test_an_interrupted_change_is_finished_by_running_it_again(self):
         with patch("opencode_connect.courier.app.write_config", side_effect=OSError("No space left")):

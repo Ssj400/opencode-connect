@@ -117,6 +117,9 @@ python3 -B tools/audit_public.py
   operator ran `pair` or `trust`.
 - A card contains a bearer token. This side keeps only the SHA-256 digest of the
   token it issued. Never publish a card, log it, or paste it in an agent chat.
+  Whoever holds a contact's token can send messages as that contact, and can also
+  announce a new address for that contact from their own IP, which redirects your
+  messages to them. Keep tokens private and the network trusted.
 - Local processes with access to the courier state or an unrestricted shell are
   within the operator's trust boundary. TTY plus a fresh confirmation code guards
   against accidental/noninteractive approval, **not a hostile local process**.
@@ -263,9 +266,17 @@ the database commit and snapshot replacement, startup repairs the snapshot from
 SQLite, never restoring an old revoked token from JSON. Do not edit contact maps
 by hand. Change the listener or URL with `address --listen IP:PORT --url URL`: it
 updates the database, then the snapshot, and restarts the service if it runs. If
-it is interrupted, run it again. Contacts keep the old URL until they receive a
-new card, as from `pair --replace`. The person name never changes; any other
-mismatch between the snapshot and the database requires operator review.
+it is interrupted, run it again. The menu's "Change this machine's address" runs it
+with an address chosen from this machine's current ones. The person name never
+changes; any other mismatch between the snapshot and the database requires operator
+review.
+
+`status`, the menu, and the service's log say when the listen IP is no longer on this
+machine and list the current addresses. After `address` changes the URL, the worker
+tells each contact's courier the new one, one per tick, retrying with the same backoff
+as uploads while a contact cannot be reached. `status` shows who has not received it
+yet. A contact whose courier predates this (it answers 404), or refuses it, keeps the
+old URL and must pair again with `--replace` on both sides.
 
 `unpair bob`, like `untrust bob`, removes the received card, revokes the issued
 token, removes the route, and cancels held/approved-but-unsent inbound and pending
@@ -396,6 +407,10 @@ agent is required.
 - `GET /v1/messages/ID` reports only messages owned by the authenticated contact.
   `GET /v1/whoami` reports the configured person and protocol version, not sessions.
 - `POST /v1/pair` and `POST /v1/pair/ack` carry pairing, described above.
+- `POST /v1/address` accepts exactly `{url}` from an authenticated contact and changes
+  only that contact's card URL. The URL must name the IP the request came from, as a
+  pairing card must; a contact without a card here gets 409. The answer says whether
+  anything changed, so a repeat is harmless.
 - Authentication occurs before body reads, except on `POST /v1/pair`, which has
   its own limits. Socket timeout is three seconds;
   bodies and responses are bounded at 64 KiB; message text at 12,000 characters.

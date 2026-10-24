@@ -143,6 +143,9 @@ class CourierHandler(BaseHTTPRequestHandler):
                 self.reply(200, self.server.courier.remote_status(auth[0], self.path.rsplit("/", 1)[1], rate_checked=True))
             elif method == "POST" and self.path == "/v1/messages":
                 self.reply(202, self.server.courier.receive(auth[0], self.json_body(length), rate_checked=True))
+            elif method == "POST" and self.path == "/v1/address":
+                self.reply(200, self.server.courier.update_contact_url(
+                    auth[0], self.json_body(length), self.client_address[0], rate_checked=True))
             elif method == "POST" and self.path == "/v1/pair/ack":
                 self.reply(200, self.server.courier.confirm_pairing(auth[0], self.json_body(length), rate_checked=True))
             else:

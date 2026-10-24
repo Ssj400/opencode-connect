@@ -18,6 +18,7 @@ from opencode_connect.courier.settings import write_config
 from opencode_connect.courier.worker import (CourierBusy, listener, relay_worker, run_courier, serve_until,
                                              stop_on_sigterm)
 from opencode_connect.local import mailbox
+from tests.courier.test_setup import VPN
 from tests.courier.fakes import FakeQueue, configuration
 
 
@@ -41,6 +42,7 @@ class WorkerLoopTests(unittest.TestCase):
         serve_until(worker, server, stop, until=lambda: next(done))
         self.assertEqual(len(ticks), 2)
         self.assertEqual(worker.tidy.call_count, 2)
+        self.assertEqual(worker.announce_once.call_count, 2)
 
     def test_a_failing_tick_is_logged_and_the_worker_keeps_going(self):
         stop, server, worker, ticks = self.loop(3, send_once=[sqlite3.OperationalError("database is locked"), 0, 0])
@@ -121,6 +123,15 @@ class CourierRunTests(unittest.TestCase):
             self.assertEqual(listener(self.app, "127.0.0.1:8765", stop, retry=0), "server")
         log.assert_called_once()
         self.assertIn("not assigned yet", log.call_args.args[0])
+        with patch("opencode_connect.courier.worker.CourierServer", side_effect=[unassigned, "server"]), \
+                patch("opencode_connect.courier.host.lost_address", return_value="127.0.0.1"), \
+                patch("opencode_connect.courier.host.interface_addresses",
+                      return_value=[{"address": VPN, "interface": "xsred0", "kind": "VPN"}]), \
+                patch("opencode_connect.courier.worker.log") as log:
+            listener(self.app, "127.0.0.1:8765", stop, retry=0)
+        for text in ("127.0.0.1 is not an address of this machine now", VPN + " (VPN, xsred0)",
+                     "Change this machine's address"):
+            self.assertIn(text, log.call_args.args[0])
         stop.set()
         with patch("opencode_connect.courier.worker.CourierServer", side_effect=[unassigned]):
             self.assertIsNone(listener(self.app, "127.0.0.1:8765", stop, retry=0))

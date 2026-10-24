@@ -38,13 +38,15 @@ and lists contacts and sessions to choose from instead of asking for IDs:
 - **4. Choose where a contact's messages go:** `courier.py contact NAME --to SESSION`.
 - **5. Remove a contact:** `courier.py unpair NAME`.
 - **6. Status:** `courier.py status`.
-- **7. Connect a project's sessions (OpenCode and Claude Code):** connects a project to the
+- **7. Change this machine's address:** `courier.py address`, choosing from this machine's
+  current addresses.
+- **8. Connect a project's sessions (OpenCode and Claude Code):** connects a project to the
   local queue.
-- **8. Show session addresses:** the address of each session on this machine.
+- **9. Show session addresses:** the address of each session on this machine.
 
 ## Sessions on one machine
 
-1. **Connect the project.** In the menu, choose 7 and give the project folder; the
+1. **Connect the project.** In the menu, choose 8 and give the project folder; the
    default is the current one. It shows what is missing and, after one code, adds only
    that:
    - the `local_bridge` server to OpenCode, with `opencode mcp add`;
@@ -55,13 +57,13 @@ and lists contacts and sessions to choose from instead of asking for IDs:
    Repeat for each project whose sessions should talk.
 2. **Restart the sessions.** Restart OpenCode in that project. Start a new Claude Code
    session there, or reconnect the server in `/mcp`.
-3. **Have a relay running.** A relay delivers messages to OpenCode sessions; option 7 says
+3. **Have a relay running.** A relay delivers messages to OpenCode sessions; option 8 says
    whether one runs. If none does, the user keeps `python3 bin/local_bridge.py relay` open
    in a terminal, or sets up the courier with its service, which runs the relay from
    login. Claude Code sessions need no relay: their hooks pick up their messages.
 4. **Talk.** Ask a session: "send to the session titled X: …". It finds OpenCode sessions
    by title and asks when more than one matches. Otherwise it needs an address: each
-   session's `whoami` gives its own, and menu option 8 lists them all. OpenCode addresses
+   session's `whoami` gives its own, and menu option 9 lists them all. OpenCode addresses
    look like `local:ses_…`, Claude Code ones like `claude:<uuid>`.
 5. **Replies** go to the address in the message, with its `id` as `reply_to`. An idle
    Claude Code session wakes on its own when a message arrives, in the terminal and in
@@ -84,7 +86,7 @@ Each person, on their own machine:
    - It checks the machine, then asks for a name and an address: choose the VPN one. It
      writes the configuration after a code.
    - It prints a firewall command, which the user reviews and runs with `sudo`, and the
-     commands for option 7.
+     commands for option 8.
    - It offers the service, which keeps the courier running from login. Recommend it.
 2. **Pair.**
    - One person runs `python3 bin/courier.py pair` (menu 2). It prints a link that is valid
@@ -103,6 +105,26 @@ Each person, on their own machine:
    - **Held messages** wait for `approve`, with a desktop notification where `notify-send` is
      available.
 6. **To stop:** `python3 bin/courier.py unpair NAME` (menu 5), on both sides.
+
+### When this machine's address changes
+
+The courier listens on one IP, the one chosen in setup. It stops being reachable when
+that IP leaves the machine: when the user switches to another VPN, gets a new LAN
+address, or re-registers the device in their VPN. `status`, the menu, and the service's
+log then say that the address is not on this machine and list the current ones.
+
+- **If the network or VPN is only coming back,** wait: the courier binds again on its
+  own as soon as the IP returns.
+- **If the address really changed,** the user chooses menu 7, "Change this machine's
+  address", or runs `python3 bin/courier.py address --listen IP:PORT --url http://IP:PORT`.
+  It asks for a code and restarts the service.
+- **Contacts learn the new URL by themselves:** this courier tells each contact's courier,
+  as soon as each can be reached. `status` shows who has not received it yet. A contact
+  whose courier is older, or that refused it, needs pairing again:
+  `python3 bin/courier.py pair --for NAME --replace` here and `pair 'LINK' --replace`
+  there.
+- **Switching VPNs** also means contacts that are only on the old VPN cannot be reached
+  until both machines share a network again.
 
 Details and the security model: [federated messaging](../../docs/multi-person.md).
 
@@ -126,11 +148,13 @@ Details and the security model: [federated messaging](../../docs/multi-person.md
 
 | What the user sees | Likely cause | What they can do |
 | --- | --- | --- |
-| "No identity was stamped for this tool call" in Claude Code | The hooks are not loaded | Option 7 for that project, then a new session |
-| The tools do not appear | The server is missing or the session was not restarted | Option 7, then restart; check `/mcp` (Claude Code) or `/mcps` (OpenCode) |
+| "No identity was stamped for this tool call" in Claude Code | The hooks are not loaded | Option 8 for that project, then a new session |
+| The tools do not appear | The server is missing or the session was not restarted | Option 8, then restart; check `/mcp` (Claude Code) or `/mcps` (OpenCode) |
 | A message to an OpenCode session stays `pending` | No relay runs | Step 3 of "Sessions on one machine"; `python3 bin/courier.py status` |
-| A Claude Code session does not react | It is in a turn, or its project has no hooks | Wait for the turn to end; check option 7 |
+| A Claude Code session does not react | It is in a turn, or its project has no hooks | Wait for the turn to end; check option 8 |
 | `status` says nothing answers on the listener | The VPN is down or the service stopped | `tailscale status`; `python3 bin/courier.py service status` and `service logs` |
+| `status` says the address is not an address of this machine | The IP changed, or its VPN is down | "When this machine's address changes" above: wait, or menu 7 |
+| A contact's messages stopped arriving after they moved | Their courier is older or told this one nothing yet | They run `status`; if needed, pair again with `--replace` |
 | `pair` fails or waits | Firewall, VPN, or an expired link | From the other machine, `curl -s -o /dev/null -w '%{http_code}\n' http://ADDRESS:PORT/v1/whoami` should print 401; a new `pair` gives a new link |
 | A contact's messages are "held with no destination" | No route for that contact | Menu 4 |
 | "The local queue belongs to node X" | The terminal uses another node name | Set `OPENCODE_CONNECT_LOCAL_NODE` as the message says |

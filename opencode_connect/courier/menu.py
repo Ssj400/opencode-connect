@@ -11,11 +11,12 @@ import sqlite3
 import time
 
 from opencode_connect.claude import hook as claude_hook
+from opencode_connect.courier import host, setup
 from opencode_connect.config import local_node
 from opencode_connect.core import BridgeError
 from opencode_connect.courier.connect import connect_project
 from opencode_connect.courier.doctor import local_queue_root, open_state
-from opencode_connect.courier.settings import clean_display, read_config
+from opencode_connect.courier.settings import clean_display, listen_address, read_config
 from opencode_connect.courier.status import ago, read_state
 from opencode_connect.local.mailbox import local_adapter
 
@@ -27,9 +28,10 @@ MENU = """\
   4. Choose where a contact's messages go
   5. Remove a contact
   6. Status
+  7. Change this machine's address
  Sessions on this machine
-  7. Connect a project's sessions (OpenCode and Claude Code)
-  8. Show session addresses
+  8. Connect a project's sessions (OpenCode and Claude Code)
+  9. Show session addresses
   0. Exit"""
 TYPE_ADDRESS = "Type an address"
 MODES = {"ask": "Held until you approve each one (the default)",
@@ -59,7 +61,9 @@ def header(config_path):
         config = read_config(config_path)
     except BridgeError:
         return "OpenCode Connect: this machine is not set up yet (choose 1)."
-    return f"OpenCode Connect: {config['person']} at {config['url']}"
+    lost = host.lost_address(config["listen"])
+    return f"OpenCode Connect: {config['person']} at {config['url']}" + (
+        "\nWarning: " + host.moved_advice(lost) if lost else "")
 
 
 def contacts(config_path):
@@ -131,6 +135,25 @@ def remove(run, config_path):
         run(["unpair", name])
 
 
+def change_address(run, config_path):
+    """A new address from this machine's current ones; `address` asks for the code, and
+    contacts' couriers are told the new URL afterwards."""
+    try:
+        config = read_config(config_path)
+    except BridgeError:
+        print("This machine is not set up yet: choose 1 first.")
+        return
+    found = host.reachable(host.interface_addresses(), host.on_wsl())
+    if not found:
+        print("No LAN or VPN address found: connect to the network or start the VPN first.")
+        return
+    print(f"This courier listens on {config['listen']}.")
+    choice = setup.choose(found)
+    port = setup.free_port(choice["address"], default=listen_address(config["listen"], allow_wildcard=True)[1])
+    origin = f"{choice['address']}:{port}"
+    run(["address", "--listen", origin, "--url", "http://" + origin])
+
+
 def invite(run):
     name = input("Accept only this person's courier (Enter for anyone): ").strip()
     run(["pair", *(["--for", name] if name else [])])
@@ -163,7 +186,8 @@ def run_menu(config_path, queue_factory):
 
     actions = {"1": lambda: run(["setup"]), "2": lambda: invite(run), "3": lambda: join(run),
                "4": lambda: route(run, config_path), "5": lambda: remove(run, config_path),
-               "6": lambda: run(["status"]), "7": connect, "8": addresses}
+               "6": lambda: run(["status"]), "7": lambda: change_address(run, config_path),
+               "8": connect, "9": addresses}
     try:
         while True:
             print()

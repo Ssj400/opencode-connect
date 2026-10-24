@@ -12,6 +12,7 @@ import subprocess
 
 from opencode_connect.config import ROOT
 from opencode_connect.courier.pairing import VPN_NETWORKS, is_vpn
+from opencode_connect.courier.settings import listen_address
 
 DEFAULT_PORT = 8765
 # RFC 1918 networks, as integers like VPN_NETWORKS.
@@ -68,6 +69,50 @@ def interface_addresses():
         return candidates(json.loads(command_output(["ip", "-j", "addr"]) or "[]"))
     except ValueError:
         return []
+
+
+def reachable(found, wsl):
+    """The addresses contacts could use: on WSL, not the 172.16/12 ones, which are WSL's
+    NAT or, in mirrored mode, Windows' virtual switches."""
+    return [row for row in found if not wsl or ipaddress.ip_address(row["address"]) not in WSL_NAT]
+
+
+def assigned(address):
+    """Whether an IP is on one of this machine's interfaces now; None when `ip` cannot tell."""
+    try:
+        links = json.loads(command_output(["ip", "-j", "addr"]) or "")
+        wanted = ipaddress.ip_address(address)
+    except ValueError:
+        return None
+    if not isinstance(links, list):
+        return None
+    for link in links:
+        for info in link.get("addr_info", ()) if isinstance(link, dict) else ():
+            try:
+                if isinstance(info, dict) and ipaddress.ip_address(info.get("local")) == wanted:
+                    return True
+            except ValueError:
+                continue
+    return False
+
+
+def lost_address(listen):
+    """The listen IP when it is not on this machine now, else None. Reads only."""
+    address = listen_address(listen, allow_wildcard=True)[0]
+    if ipaddress.ip_address(address).is_unspecified or assigned(address) is not False:
+        return None
+    return address
+
+
+def moved_advice(address):
+    """What to do about a listen IP that is not on this machine: wait for its network, or
+    change the address; contacts are told the new one by their couriers."""
+    found = interface_addresses()
+    now = ", ".join(f"{row['address']} ({row['kind']}, {row['interface']})" for row in found) or "none on a LAN or VPN"
+    return (f"{address} is not an address of this machine now (addresses now: {now}). If its network or VPN is "
+            "still connecting, the courier keeps waiting for it. If this machine's address changed, choose "
+            "\"Change this machine's address\" in the menu of `python3 bin/courier.py`, or run "
+            "`python3 bin/courier.py address`; your contacts' couriers are then told the new one.")
 
 
 def on_wsl(release=Path("/proc/sys/kernel/osrelease")):

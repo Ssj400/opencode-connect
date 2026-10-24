@@ -212,3 +212,20 @@ flow keeps every consent boundary and removes the steps that were not decisions:
   diagnosis. **`unpair`** revokes both directions on one side.
 - **WSL is supported in mirrored mode only**: NAT addresses are not offered, and
   `setup` explains the switch. Native Windows and macOS are separate milestones.
+
+## Announcing an address change
+
+A courier's address is an IP, and it changes: switching VPNs, a new LAN lease, or
+re-registering the device. Contacts then kept the old URL until both sides paired again.
+Now the courier says when its IP is no longer on the machine, the person changes it
+with the menu or `address`, and the courier tells each contact's courier the new URL.
+
+- **The person decides the address.** Rebinding automatically was rejected: it would
+  choose, without the person, which network the courier listens on.
+- **An announcement is authenticated and tied to its source.** It needs the token the
+  contact issued, and its URL must be the IP it comes from, as with pairing cards. A
+  stolen token could already send messages as the contact; now it can also redirect
+  that contact's messages to the thief's own IP, which is why tokens stay private and
+  the network trusted.
+- **Older couriers keep working.** One that does not know the route answers 404; the
+  announcement is marked so, and `status` asks for pairing again with `--replace`.
