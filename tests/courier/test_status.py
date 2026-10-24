@@ -11,7 +11,7 @@ from opencode_connect.core import BridgeError
 from opencode_connect.courier.app import RETENTION, Courier
 from opencode_connect.courier.cli import main
 from opencode_connect.courier.settings import write_config
-from opencode_connect.courier.status import separate_relays, status
+from opencode_connect.courier.status import courier_relays, separate_relays, status
 from opencode_connect.local import mailbox
 from tests.courier.fakes import configuration
 from tests.courier.test_setup import system
@@ -139,11 +139,15 @@ class StatusTests(unittest.TestCase):
         proc = self.root / "proc"
         for pid, argv in (("4242", [b"python3", b"/srv/example/bin/local_bridge.py", b"relay"]),
                           ("4243", [b"python3", b"/srv/example/bin/local_bridge.py", b"inbox"]),
-                          ("4244", [b"python3", b"/srv/example/bin/collab.py", b"relay"]), ("self", [b"relay"])):
+                          ("4244", [b"python3", b"/srv/example/bin/collab.py", b"relay"]), ("self", [b"relay"]),
+                          ("4246", [b"python3", b"-B", b"/srv/example/bin/courier.py", b"--config", b"c.json",
+                                    b"run", b"--relay"]),
+                          ("4247", [b"python3", b"/srv/example/bin/courier.py", b"run"])):
             (proc / pid).mkdir(parents=True)
             (proc / pid / "cmdline").write_bytes(b"\0".join(argv) + b"\0")
         (proc / "4245").mkdir()  # A process that ended while it was read.
         self.assertEqual(separate_relays(proc), [4242])
+        self.assertEqual(courier_relays(proc), [4246])
         with patch("opencode_connect.courier.status.os.getuid", return_value=os.getuid() + 1):
             self.assertEqual(separate_relays(proc), [])  # Another user's relay uses another queue.
         self.assertEqual(separate_relays(self.root / "missing"), [])

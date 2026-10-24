@@ -12,7 +12,8 @@ opencode_connect/    the package; nothing in it runs as a script
   bridge/            Linux -> WSL bridge: bridge, collab, deploy, mcp_server
   local/             local queue (mailbox) and its MCP server
   courier/           person-to-person courier: settings, app, pairing, server,
-                     worker, service, notify, host, setup, status, doctor, cli
+                     worker, service, notify, host, setup, status, doctor,
+                     connect, menu, cli
   claude/            Claude Code hook and MCP server
 tests/               mirrors the package; fakes.py files hold shared test doubles
 tools/               maintenance: the export audit

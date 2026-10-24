@@ -145,7 +145,8 @@ def join_by_link(courier, config, link, replace):
 def main(argv=None, *, queue_factory=real_queue):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", type=Path, default=default_config_path())
-    sub = parser.add_subparsers(dest="command", required=True)
+    # Without a command, a terminal gets the menu; anything else, the usual usage error.
+    sub = parser.add_subparsers(dest="command")
     first = sub.add_parser("setup", help="Choose a name and address, check this machine, and say what is left to do")
     first.add_argument("--allow-172", action="store_true",
                        help="On WSL, also offer 172.16/12 addresses, for a LAN that uses that range")
@@ -196,6 +197,11 @@ def main(argv=None, *, queue_factory=real_queue):
     reject = sub.add_parser("reject", help="Reject one held message")
     reject.add_argument("id")
     args = parser.parse_args(argv)
+    if args.command is None:
+        if not sys.stdin.isatty() or not sys.stdout.isatty():
+            parser.error("a command is required; in a terminal, running it without one opens a menu")
+        from opencode_connect.courier.menu import run_menu
+        return run_menu(args.config, queue_factory)
     try:
         if args.command == "doctor":
             findings = doctor(args.config, network=not args.offline)

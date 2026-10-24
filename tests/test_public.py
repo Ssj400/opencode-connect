@@ -6,6 +6,7 @@ import io
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -17,6 +18,7 @@ import uuid
 from opencode_connect import config
 from opencode_connect.bridge import collab, deploy, mcp_server
 from opencode_connect.claude import mcp_server as claude_mcp_server
+from opencode_connect.courier import menu
 from opencode_connect.local import mcp_server as local_mcp_server
 from tests.bridge.test_bridge import fixture
 from tools import audit_public
@@ -166,6 +168,19 @@ class PublicTests(unittest.TestCase):
         for relative in ("../../README.md", "../../SECURITY.md"):
             self.assertTrue((skill.parent / relative).is_file())
         self.assertIn("Do not install anything automatically", text)
+
+    def test_the_skill_guide_covers_every_menu_option_and_its_links_resolve(self):
+        skill = ROOT / "skills/opencode-connect"
+        self.assertIn("](guide.md)", (skill / "SKILL.md").read_text())
+        guide = (skill / "guide.md").read_text()
+        for line in menu.MENU.splitlines():
+            number, _, label = line.strip().partition(". ")
+            if number.isdigit() and number != "0":
+                with self.subTest(option=number):
+                    self.assertIn(f"**{number}. {label}:**", guide)
+        for target in re.findall(r"\]\(([^)#]+)\)", guide):
+            with self.subTest(link=target):
+                self.assertTrue((skill / target).resolve().is_file())
 
     def test_the_skill_names_every_tool_of_each_server(self):
         text = (ROOT / "skills/opencode-connect/SKILL.md").read_text()

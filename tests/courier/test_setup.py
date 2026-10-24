@@ -121,14 +121,13 @@ class HostTests(unittest.TestCase):
         with patch.dict(os.environ, {"OPENCODE_CONNECT_LOCAL_NODE": "wsl"}):
             os.environ.pop("OPENCODE_CONNECT_LOCAL_STATE_HOME", None)
             opencode, claude = host.mcp_commands()
-        self.assertEqual(shlex.split(opencode), ["opencode", "mcp", "add", "local_bridge", "--", "env",
-                                                 "OPENCODE_CONNECT_LOCAL_NODE=wsl", "python3",
-                                                 str(ROOT / "bin/local_mcp_server.py")])
+        self.assertEqual(shlex.split(opencode), ["opencode", "mcp", "add", "--env", "OPENCODE_CONNECT_LOCAL_NODE=wsl",
+                                                 "local_bridge", "--", "python3", str(ROOT / "bin/local_mcp_server.py")])
         self.assertEqual(shlex.split(claude), ["claude", "mcp", "add", "opencode_connect", "--scope", "local", "-e",
                                                "OPENCODE_CONNECT_LOCAL_NODE=wsl", "--", "python3",
                                                str(ROOT / "bin/claude_mcp_server.py")])
         with patch.dict(os.environ, {}, clear=True):
-            self.assertNotIn("env", shlex.split(host.mcp_commands()[0]))
+            self.assertNotIn("--env", shlex.split(host.mcp_commands()[0]))
 
 
 class SetupTests(unittest.TestCase):
@@ -188,7 +187,7 @@ class SetupTests(unittest.TestCase):
         self.assertIn("other devices on this network could read", output)
         self.assertNotIn(DOCKER, output)
         for text in (f"sudo ufw allow in on wlan0 from {ipv4(192, 168, 1, 0)}/24 to {LAN} port 8765",
-                     "opencode mcp add local_bridge", "claude mcp add opencode_connect", "Linger is off",
+                     "local_bridge -- python3", "claude mcp add opencode_connect", "Linger is off",
                      "bin/courier.py pair"):
             self.assertIn(text, output)
 
