@@ -99,8 +99,9 @@ permission.
   or a stamp. Use trusted accounts and private state directories.
 - Without hooks, for example under `--bare` or with hooks disabled, the server refuses
   every call.
-- Waking an idle session has been verified in the terminal; in the VS Code panel it
-  remains to be confirmed.
+- Waking an idle session has been verified in the terminal and in the VS Code panel
+  (Claude Code 2.1.309), with an OpenCode session on the same machine sending and
+  receiving the reply through the local relay.
 - `delivered` means handed over by `receive`, not acted upon or completed.
 - Each message a session reads or answers can consume model usage from that person's
   plan or provider, as any other turn does.

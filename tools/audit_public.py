@@ -112,9 +112,11 @@ def audit(root, terms=None):
             continue
         issues.extend(f"{name}: {issue}" for issue in findings(text, terms))
     allowed_dirs = {str(parent) for name in FILES for parent in Path(name).parents}
-    # Generated files are never exported. Root Git metadata is not project content;
+    # Generated files, and Claude Code's and OpenCode's settings for this checkout
+    # (ignored by Git), are never exported. Root Git metadata is not project content;
     # nested repositories and symlinks are still rejected.
-    ignored = {"__pycache__", ".test-tmp"}
+    ignored = {"__pycache__", ".test-tmp", ".claude", ".opencode"}
+    harness_files = {Path("opencode.json"), Path("opencode.jsonc")}
     def visit(folder):
         for path in sorted(folder.iterdir()):
             relative = path.relative_to(root)
@@ -122,7 +124,7 @@ def audit(root, terms=None):
                 issues.append(f"{relative}: symlinks cannot be exported")
             elif relative == Path(".git"):
                 continue
-            elif path.name in ignored and path.is_dir():
+            elif path.name in ignored and path.is_dir() or relative in harness_files and path.is_file():
                 continue
             elif path.is_dir():
                 if str(relative) not in allowed_dirs:
