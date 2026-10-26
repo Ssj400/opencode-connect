@@ -80,10 +80,20 @@ own LAN. Never on a public or shared network: messages and tokens travel as plai
 and such networks often stop devices from reaching each other anyway. On WSL, only
 mirrored networking works; setup explains how to switch.
 
-If the VPN has access rules (ACLs), as Tailscale and Headscale networks can, they must
-allow the courier's TCP port (8765 by default) between the two machines, **in both
-directions**. Whoever manages the VPN changes them; until then, `ping` works but
-pairing times out.
+If the VPN has access rules, they must allow the courier's TCP port (8765 by default)
+between the two machines, **in both directions**. Each VPN names and keeps them
+differently:
+
+| VPN | Its access rules | Where |
+| --- | --- | --- |
+| Tailscale | ACLs or grants in the tailnet policy file | Admin console, Access controls |
+| Headscale, and networks built on it | The same policy format | The policy file on the control server |
+| ZeroTier | Flow rules | The network's settings in ZeroTier Central |
+| NetBird | Access control policies | Dashboard, Access Control |
+| Plain WireGuard | None of its own | Only each machine's firewall |
+
+Most of them allow everything until someone restricts them. Whoever manages the VPN
+changes them; until then, `ping` can still answer while pairing times out.
 
 Each person, on their own machine:
 
@@ -158,10 +168,10 @@ Details and the security model: [federated messaging](../../docs/multi-person.md
 | The tools do not appear | The server is missing or the session was not restarted | Option 8, then restart; check `/mcp` (Claude Code) or `/mcps` (OpenCode) |
 | A message to an OpenCode session stays `pending` | No relay runs | Step 3 of "Sessions on one machine"; `python3 bin/courier.py status` |
 | A Claude Code session does not react | It is in a turn, or its project has no hooks | Wait for the turn to end; check option 8 |
-| `status` says nothing answers on the listener | The VPN is down or the service stopped | `tailscale status`; `python3 bin/courier.py service status` and `service logs` |
+| `status` says nothing answers on the listener | The VPN is down or the service stopped | The VPN's own status (`tailscale status`, `zerotier-cli listnetworks`, `netbird status`); `python3 bin/courier.py service status` and `service logs` |
 | `status` says the address is not an address of this machine | The IP changed, or its VPN is down | "When this machine's address changes" above: wait, or menu 7 |
 | A contact's messages stopped arriving after they moved | Their courier is older or told this one nothing yet | They run `status`; if needed, pair again with `--replace` |
-| `ping` to the other machine answers, but `pair` times out | The VPN's access rules (ACLs) or a firewall block the courier's port | Ask whoever manages the VPN to allow that TCP port between both machines, both ways; check each firewall |
+| `ping` to the other machine answers, but `pair` times out | The VPN's access rules or a firewall block the courier's port | Ask whoever manages the VPN to allow that TCP port between both machines, both ways ("Another person" says where each VPN keeps its rules); check each firewall |
 | `pair` fails or waits | Firewall, VPN, or an expired link | From the other machine, `curl -s -o /dev/null -w '%{http_code}\n' http://ADDRESS:PORT/v1/whoami` should print 401; a new `pair` gives a new link |
 | A contact's messages are "held with no destination" | No route for that contact | Menu 4 |
 | "The local queue belongs to node X" | The terminal uses another node name | Set `OPENCODE_CONNECT_LOCAL_NODE` as the message says |
