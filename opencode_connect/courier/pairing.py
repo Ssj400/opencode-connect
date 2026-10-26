@@ -71,6 +71,15 @@ def same_host(url, peer):
     return addresses[0] == addresses[1]
 
 
+def reach_advice(url):
+    """What to check when the courier at `url` does not answer."""
+    port = urlsplit(url).port or (443 if url.startswith("https:") else 80)
+    return (f"Check that both machines are on the same VPN or LAN, that the VPN's access rules (ACLs) allow "
+            f"TCP port {port} between them in both directions, and that the firewall of the machine at {url} "
+            f"lets it in. A quick check: `curl -s -o /dev/null -w '%{{http_code}}\\n' {url}/v1/whoami` prints "
+            "401 from a machine that can reach that courier, and times out from one that cannot.")
+
+
 def is_vpn(address):
     return any(ipaddress.ip_address(address) in network for network in VPN_NETWORKS)
 
@@ -265,9 +274,14 @@ def join_offer(courier, link, *, replace=False, attempts=3, wait=1.0):
     key = pairing_key(code)
     token, nonce = secrets.token_urlsafe(32), secrets.token_hex(16)
     own = {"person": config["person"], "url": config["url"], "token": token}
-    answer = retrying(lambda: http_json(origin + "/v1/pair", method="POST", timeout=SOCKET_TIMEOUT,
-                                        data={"nonce": nonce, "card": own, "mac": seal(key, b"join", nonce, own)}),
-                      attempts, wait)
+    try:
+        answer = retrying(lambda: http_json(origin + "/v1/pair", method="POST", timeout=SOCKET_TIMEOUT,
+                                            data={"nonce": nonce, "card": own, "mac": seal(key, b"join", nonce, own)}),
+                          attempts, wait)
+    except HttpError:
+        raise  # It answered: the code, the offer, or the address was refused.
+    except BridgeError as exc:
+        raise BridgeError(f"No answer from {origin}: {str(exc).rstrip('.')}. {reach_advice(origin)}") from exc
     try:
         card = validate_card(answer["card"])
         valid = hmac.compare_digest(seal(key, b"offer", nonce, card), str(answer["mac"]))
