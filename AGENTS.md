@@ -19,7 +19,8 @@ any language; this policy does not restrict messages exchanged through the bridg
 - Use `queue` normally. Reserve `steer` for expressly authorized urgent notices;
   it does not guarantee immediate interruption of a blocked tool.
 - Do not cancel agents. `cancel-pending` only cancels a local, unsent message.
-- Use `whoami` for the caller's address and `peers` for optional shortcuts. Do not guess
+- Use `whoami` for the caller's address, `people` for the courier's `person:NAME`
+  contacts, and `peers` for optional shortcuts (SSH bridge only). Do not guess
   destination sessions. Registration is a separate file-transfer requirement, not a chat gate.
 - `pending` does not mean delivered; `delivered` means API acceptance, not task completion.
 - `bin/bridge.py doctor` is the read-only diagnosis. Keep it that way: no sends, claims,

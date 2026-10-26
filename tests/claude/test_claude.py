@@ -305,7 +305,7 @@ class ClaudeServerTests(ClaudeTestCase):
     def test_protocol_lists_the_local_tools_and_receive(self):
         tools = claude_mcp_server.handle({"id": 1, "method": "tools/list"})["result"]["tools"]
         self.assertEqual({tool["name"] for tool in tools},
-                         {"whoami", "find_sessions", "send", "status", "diagnose", "receive"})
+                         {"whoami", "find_sessions", "send", "status", "diagnose", "people", "receive"})
         info = claude_mcp_server.handle({"id": 2, "method": "initialize", "params": {}})["result"]
         self.assertEqual(info["serverInfo"]["name"], "opencode-connect-claude")
         self.assertIn("PreToolUse hook", info["instructions"])

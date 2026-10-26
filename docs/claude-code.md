@@ -87,6 +87,9 @@ hooks and `receive`, and messages to people need a configured courier and their
 human's approval. When answering, pass the received message's `id` as `reply_to`; the
 queue accepts it only for a message from that destination already delivered to the
 caller. `find_sessions` locates an OpenCode session by title and reads metadata only.
+`people` lists the courier's contacts as `person:NAME` and which way each works, never
+their URLs or tokens. In `status`, a message to a person carries `their_state` and a
+`meaning`: `held` means that person has not approved it yet.
 
 ## Permissions
 

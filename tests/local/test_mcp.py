@@ -89,7 +89,7 @@ class LocalMcpTests(unittest.TestCase):
 
     def test_protocol_has_only_local_tools(self):
         tools = handle({"id": 1, "method": "tools/list"})["result"]["tools"]
-        self.assertEqual({t["name"] for t in tools}, {"whoami", "find_sessions", "send", "status", "diagnose"})
+        self.assertEqual({t["name"] for t in tools}, {"whoami", "find_sessions", "send", "status", "diagnose", "people"})
         reply = handle({"id": 2, "method": "tools/call", "params": {"name": "send"}})
         self.assertTrue(reply["result"]["isError"])
         self.assertIsNone(handle({"method": "notifications/initialized"}))

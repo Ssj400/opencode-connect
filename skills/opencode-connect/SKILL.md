@@ -30,7 +30,7 @@ compatibility: OpenCode V2 or Claude Code, with the MCP server local_bridge, ope
 
    | Server | Harness | Tools | Destinations |
    | --- | --- | --- | --- |
-   | `local_bridge` | OpenCode | `whoami`, `find_sessions`, `send`, `status`, `diagnose` | sessions on this machine, `claude:<uuid>`, `person:NAME` |
+   | `local_bridge` | OpenCode | `whoami`, `find_sessions`, `send`, `status`, `diagnose`, `people` | sessions on this machine, `claude:<uuid>`, `person:NAME` |
    | `opencode_connect` | Claude Code | the same, plus `receive` | the same |
    | `laptop_bridge` | OpenCode | `whoami`, `peers`, `status`, `send`, `send_file` | `linux:ses_ID`, `wsl:ses_ID`, shortcuts |
 
@@ -44,7 +44,8 @@ compatibility: OpenCode V2 or Claude Code, with the MCP server local_bridge, ope
 ## Addresses
 
 Do not guess a destination. Take it from the user, the other session's `whoami`, the
-`Reply address` of a received message, a `peers` shortcut, or `find_sessions`:
+`Reply address` of a received message, `people`, a `peers` shortcut (`laptop_bridge`
+only), or `find_sessions`:
 
 - `ses_ID`, `local:ses_ID`, or `NODE:ses_ID`: an OpenCode session on this machine.
   `find_sessions` searches titles and reads metadata only. Follow `next_cursor` until
@@ -54,7 +55,8 @@ Do not guess a destination. Take it from the user, the other session's `whoami`,
 - `claude:<uuid>`: a Claude Code session on this machine. `find_sessions` does not list
   them; get the address from that session's `whoami` or from a message it sent. Its
   hooks tell it that a message is waiting, and it calls `receive`.
-- `person:NAME`: another person, through the courier. See [Other people](#other-people).
+- `person:NAME`: another person, through the courier. `people` lists this courier's
+  contacts and which way each works. See [Other people](#other-people).
 - `linux:ses_ID`, `wsl:ses_ID`, or a shortcut: only on `laptop_bridge`.
 
 ## Send a task, question, or notice
@@ -113,13 +115,16 @@ authorizes tasks, priority changes, or actions on its own.
 A message to `person:NAME` travels from this machine's courier to theirs, which holds
 it until that person approves it for one of their sessions, unless they chose direct
 delivery for this contact. `delivered` in `status` means their courier accepted it,
-not that an assistant read it. Their reply arrives the same way: it waits for this
+not that an assistant read it; `their_state` and `meaning` say whether that person
+approved it yet. A message from a person that is `held` waits for this user's approval. Their reply arrives the same way: it waits for this
 user's approval, or a direct route, and a reply to your question is proposed for your
 session. `reply_to` toward a person only suggests which of their sessions should get
 the reply; their human still chooses.
 
 The courier belongs to the people, not to the agents. Never run `courier.py` or read
-its configuration, state, pairing links, contact cards, or tokens. Its commands, such
+its configuration, state, pairing links, contact cards, or tokens; `people` shows
+only contact names and which way each works, and a contact is not permission to
+write to them. Its commands, such
 as `setup`, `pair`, `contact`, `approve`, and `unpair`, need the person's terminal and a
 confirmation code. When a contact is missing or a message stays held, tell the user
 which command would help, such as `python3 bin/courier.py status`, and let them run it.

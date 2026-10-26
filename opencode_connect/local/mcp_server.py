@@ -8,6 +8,8 @@ import sys
 from opencode_connect.bridge.mcp_server import handle as bridge_handle, tool_schema
 from opencode_connect.config import local_node
 from opencode_connect.core import BridgeError
+from opencode_connect.courier.doctor import local_queue_root
+from opencode_connect.courier.people import explain, read_people
 from opencode_connect.local.mailbox import LocalMailbox, canonical, local_adapter, state_root
 from opencode_connect.opencode_adapter import OpenCodeAdapter
 
@@ -21,6 +23,8 @@ Addresses use the operator-configured node, independently of local transport.
 local:ID is only a local input shorthand; use the canonical Reply address when answering.
 claude:UUID addresses a Claude Code session on this machine. person:NAME addresses another
 person; it is delivered only by a configured courier and only if that person accepts.
+people lists this courier's person:NAME contacts and which way each works; a contact is
+not permission to write to them. In status, held means a person has not approved it yet.
 When answering a received message, pass its id as reply_to. For person:NAME it only
 suggests which of their sessions should get the reply; their human still chooses.
 diagnose compares queue configuration, not service identity. Different services need separate queues.
@@ -42,6 +46,7 @@ TOOLS = [
                               "its id. It must come from the destination."}}, ("to", "text")),
     tool_schema("status", "Inspect local queue receipts; never retry ambiguous sends.", {}),
     tool_schema("diagnose", "Compare node and queue contracts; no API identity or authentication guarantee.", {}),
+    tool_schema("people", "List the person:NAME contacts of this machine's courier; never URLs or tokens.", {}),
 ]
 
 
@@ -54,7 +59,7 @@ def call_tool(params, *, root=None, adapter=None, node=None, identity=opencode_i
     """`identity(params, node)` returns the caller's canonical address; each harness supplies its own."""
     name, args = params["name"], params.get("arguments", {})
     allowed = {"whoami": set(), "find_sessions": {"query", "cursor"},
-               "send": {"to", "text", "reply_to"}, "status": set(), "diagnose": set()}
+               "send": {"to", "text", "reply_to"}, "status": set(), "diagnose": set(), "people": set()}
     if name not in allowed or not isinstance(args, dict) or set(args) - allowed[name]:
         raise BridgeError("Unknown local tool or arguments.")
     node = local_node(node)
@@ -67,10 +72,12 @@ def call_tool(params, *, root=None, adapter=None, node=None, identity=opencode_i
         own = source.split(":", 1)[1] if source.startswith(node + ":") else None
         return (adapter or local_adapter()).find_sessions(args["query"], cursor=args.get("cursor"),
                                                          exclude=own)
+    if name == "people":
+        return read_people(local_queue_root() if root is None else root)
     box = LocalMailbox(root if root is not None else state_root(), node=node)
     try:
         if name == "status":
-            return box.status()
+            return explain(box.db, box.status())
         if name == "diagnose":
             return box.diagnostics()
         return box.enqueue(source, args["to"], args["text"], reply_to=args.get("reply_to"))

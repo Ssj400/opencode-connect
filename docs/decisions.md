@@ -229,3 +229,18 @@ with the menu or `address`, and the courier tells each contact's courier the new
   the network trusted.
 - **Older couriers keep working.** One that does not know the route answers 404; the
   announcement is marked so, and `status` asks for pairing again with `--replace`.
+
+## What agents see of the courier
+
+Agents could address `person:NAME` only when the user told them the name, and a
+message's `held` in `status` did not say who had to act. Both came up in real use.
+
+- **`people` lists contacts for agents**, with which way each works. It shows names
+  only, never URLs, tokens, or routes, and reads the queue without changing it. A
+  contact is not permission to write to them. Later, the same tool can list the
+  sessions a contact publishes.
+- **`status` explains `held`.** A message from a person that is held waits for this
+  user's `approve`. A message to a person carries `their_state` from the courier's latest
+  receipt, newer than the one stored at upload, and what it means.
+- **Agents still never run `courier.py`.** Approving, pairing, and routes stay with the
+  people, behind their terminal and a code.
