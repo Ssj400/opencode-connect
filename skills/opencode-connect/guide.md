@@ -192,7 +192,7 @@ Details and the security model: [federated messaging](../../docs/multi-person.md
 
 | What the user sees | Likely cause | What they can do |
 | --- | --- | --- |
-| "No identity was stamped for this tool call" in Claude Code | The hooks are not loaded | Option 8 for that project, then a new session |
+| "No identity was stamped for this tool call" in Claude Code | The hooks are not loaded | Option 8 for that project, then a new session; after installing for every project, the hooks belong in `~/.claude/settings.json` ("Every project at once", step 3) |
 | The tools do not appear | The server is missing or the session was not restarted | Option 8, then restart; check `/mcp` (Claude Code) or `/mcps` (OpenCode) |
 | A message to an OpenCode session stays `pending` | No relay runs | Step 3 of "Sessions on one machine"; `python3 bin/courier.py status` |
 | A Claude Code session does not react | It is in a turn, or its project has no hooks | Wait for the turn to end; check option 8 |

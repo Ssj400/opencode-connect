@@ -97,7 +97,10 @@ def load_config(root=ROOT):
     try:
         cfg = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError as exc:
-        raise BridgeError("Missing routes.json: copy routes.example.json and configure both machines.") from exc
+        raise BridgeError("Missing routes.json, which only the SSH bridge uses: copy routes.example.json and "
+                          "configure both machines. Sessions on this machine and the courier do not need it: "
+                          "`python3 bin/bridge.py doctor --local` checks the local queue, and "
+                          "`python3 bin/courier.py status` the courier.") from exc
     except (ValueError, OSError) as exc:
         raise BridgeError("Could not read routes.json as UTF-8 JSON.") from exc
     return validate_config(cfg)

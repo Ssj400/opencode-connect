@@ -71,7 +71,7 @@ class ConfigTests(unittest.TestCase):
 
     def test_missing_config_is_not_inherited(self):
         with TemporaryDirectory() as folder:
-            with self.assertRaisesRegex(config.BridgeError, "Missing routes.json"):
+            with self.assertRaisesRegex(config.BridgeError, r"Missing routes.json, which only the SSH bridge uses.*bridge.py doctor --local.*courier.py status"):
                 config.load_config(Path(folder))
             (Path(folder) / "routes.json").write_text("invalid")
             with self.assertRaises(config.BridgeError):
