@@ -58,6 +58,12 @@ preserving existing settings. Claude Code keeps that file out of commits when it
 creates it; if you create it by hand, make sure it is ignored. The `PreToolUse`
 matcher must name the server: `mcp__opencode_connect__.*` for the name above.
 
+To connect every project at once, use `--scope user` instead of `--scope local` and
+merge the same hooks and deny rules into your own `~/.claude/settings.json`. Every
+Claude Code session of yours, in any folder, can then be messaged and woken, and each
+one starts the background `wake` watcher after its turns; the menu's option is then not
+needed in any project.
+
 Start a new session, or reconnect the server in `/mcp`, and check that it shows as
 connected. Ask Claude to call `whoami`: it returns `claude:<uuid>` for the current
 session. `/status` lists `Project local settings` among the loaded sources.

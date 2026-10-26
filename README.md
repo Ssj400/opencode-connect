@@ -308,8 +308,9 @@ not checked; use `/mcps` and `whoami` there.
 ## Local skill and repository
 
 The skill is not installed automatically. To enable it from a complete checkout,
-explicitly add the absolute path to its `skills` directory to the project's
-`skills` configuration array, preserving existing entries. For example:
+explicitly add the absolute path to its `skills` directory to the `skills`
+configuration array of the project, or of OpenCode's global config
+(`~/.config/opencode/opencode.json`) for every project, preserving existing entries. For example:
 `"skills": ["/srv/opencode-connect/skills"]` (replace the placeholder path).
 In Claude Code, link the skill's folder into the project's `.claude/skills/`, or into
 `~/.claude/skills/` for every project:
