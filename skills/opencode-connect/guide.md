@@ -54,7 +54,8 @@ and lists contacts and sessions to choose from instead of asking for IDs:
    - Claude Code's hooks and deny rules, merged into `.claude/settings.local.json`;
    - that file to `.git/info/exclude`, so it is never committed.
 
-   Repeat for each project whose sessions should talk.
+   Repeat for each project whose sessions should talk, or connect every project at once
+   (below).
 2. **Restart the sessions.** Restart OpenCode in that project. Start a new Claude Code
    session there, or reconnect the server in `/mcp`.
 3. **Have a relay running.** A relay delivers messages to OpenCode sessions; option 8 says
@@ -71,6 +72,27 @@ and lists contacts and sessions to choose from instead of asking for IDs:
 
 To do it by hand instead: [local messaging](../../docs/local-messaging.md) and
 [Claude Code sessions](../../docs/claude-code.md).
+
+### Every project at once
+
+Instead of option 8 in each project, the user can connect them all in their own settings.
+Then every OpenCode and Claude Code session on this machine, in any folder, can be
+messaged and woken. Offer it when the user wants that; otherwise connect projects one by
+one. From this checkout's folder, so that `$PWD` is its path:
+
+1. OpenCode, in its global config:
+   `opencode mcp add --global local_bridge -- python3 "$PWD/bin/local_mcp_server.py"`
+2. Claude Code, for every project of this user:
+   `claude mcp add opencode_connect --scope user -- python3 "$PWD/bin/claude_mcp_server.py"`
+3. Claude Code's hooks and deny rules: merge those of
+   [the example](../../examples/claude-settings.local.json.example) into
+   `~/.claude/settings.json`, with `/srv/opencode-connect` replaced by this checkout's path,
+   keeping everything already there. The user reviews the result before saving it.
+
+Then restart the sessions, as in step 2; steps 3 to 5 stay the same. If the terminal
+sets `OPENCODE_CONNECT_LOCAL_NODE` or `OPENCODE_CONNECT_LOCAL_STATE_HOME`, pass the same
+values: `--env NAME=value` to OpenCode, `-e NAME=value` to Claude Code, and `env
+NAME=value` before each hook command. Option 8 is then not needed in any project.
 
 ## Another person
 
@@ -185,3 +207,8 @@ Details and the security model: [federated messaging](../../docs/multi-person.md
   - Claude Code: `claude mcp remove opencode_connect --scope local`, and delete the
     opencode-connect hooks from `.claude/settings.local.json`.
   - OpenCode: delete the `local_bridge` entry from the project's `opencode.json`.
+- **The connection of every project:**
+  - Claude Code: `claude mcp remove opencode_connect --scope user`, and delete the
+    opencode-connect hooks from `~/.claude/settings.json`.
+  - OpenCode: delete the `local_bridge` entry from its global config,
+    `~/.config/opencode/opencode.json` (or `opencode.jsonc`).
