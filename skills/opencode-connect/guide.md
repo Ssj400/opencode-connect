@@ -88,6 +88,12 @@ one. From this checkout's folder, so that `$PWD` is its path:
    [the example](../../examples/claude-settings.local.json.example) into
    `~/.claude/settings.json`, with `/srv/opencode-connect` replaced by this checkout's path,
    keeping everything already there. The user reviews the result before saving it.
+4. This skill, so that every session can read this guide:
+   - Claude Code: `mkdir -p ~/.claude/skills && ln -s "$PWD/skills/opencode-connect" ~/.claude/skills/opencode-connect`
+   - OpenCode: add this checkout's `skills` folder, as an absolute path, to the `skills`
+     array of its global config (`~/.config/opencode/opencode.json` or `opencode.jsonc`),
+     keeping the entries already there: `"skills": ["/srv/opencode-connect/skills"]`,
+     with the path replaced.
 
 Then restart the sessions, as in step 2; steps 3 to 5 stay the same. If the terminal
 sets `OPENCODE_CONNECT_LOCAL_NODE` or `OPENCODE_CONNECT_LOCAL_STATE_HOME`, pass the same
@@ -212,3 +218,5 @@ Details and the security model: [federated messaging](../../docs/multi-person.md
     opencode-connect hooks from `~/.claude/settings.json`.
   - OpenCode: delete the `local_bridge` entry from its global config,
     `~/.config/opencode/opencode.json` (or `opencode.jsonc`).
+  - The skill: `rm ~/.claude/skills/opencode-connect` (only the link), and the
+    checkout's entry in the `skills` array of OpenCode's global config.
