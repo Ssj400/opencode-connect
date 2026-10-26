@@ -104,10 +104,11 @@ python3 -B tools/audit_public.py
 - The firewall must admit only the chosen interface, port, and network. `setup` and
   `address` print such rules and never change a firewall, SSH setting, route, or VPN
   configuration. Do not expose this listener on the public Internet.
-- A VPN with access rules (ACLs), as Tailscale and Headscale networks can have, must
-  allow the courier's TCP port between the two machines in both directions: the joiner
-  calls the inviter, and the inviter checks the way back. When only `ping` passes,
-  `pair` reports no answer and says what to check.
+- A VPN with access rules (ACLs or grants in Tailscale and Headscale, flow rules in
+  ZeroTier, access control policies in NetBird) must allow the courier's TCP port
+  between the two machines in both directions: the joiner calls the inviter, and the
+  inviter checks the way back. When only `ping` passes, `pair` reports no answer and
+  says what to check.
 - Plain HTTP depends on the trusted network path. On an untrusted LAN it exposes
   bearer credentials and message content; use HTTPS with an independently managed
   authenticated TLS endpoint or a trusted encrypted VPN. `setup` labels LAN
