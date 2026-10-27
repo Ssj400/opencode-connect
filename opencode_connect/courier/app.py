@@ -16,6 +16,8 @@ from opencode_connect.courier.outbound import OutboundMixin
 from opencode_connect.courier.pairing import PairingMixin
 from opencode_connect.courier.settings import (MESSAGE, RETENTION, TOKEN, RequestError, clean_display,
                                                person, validate_card, validate_config, write_config)
+from opencode_connect.courier.team import OWNER_TABLES, TeamMixin
+from opencode_connect.courier.teammate import MEMBER_TABLES, TeammateMixin
 from opencode_connect.transports import short_text
 
 MAX_TEXT = 12000
@@ -38,7 +40,7 @@ def local_target(target):
     return target
 
 
-class Courier(PairingMixin, AddressMixin, OutboundMixin):
+class Courier(PairingMixin, AddressMixin, OutboundMixin, TeamMixin, TeammateMixin):
     """Application logic over an injected local queue sharing one SQLite transaction.
 
     The queue exposes db, transaction(), claim(prefix), mark(), release(),
@@ -75,11 +77,15 @@ class Courier(PairingMixin, AddressMixin, OutboundMixin):
                         id INTEGER PRIMARY KEY CHECK(id=1), key TEXT NOT NULL, expires REAL NOT NULL,
                         name TEXT, replacing INTEGER NOT NULL,
                         state TEXT NOT NULL CHECK(state IN ('open', 'provisional', 'confirmed')),
-                        nonce TEXT, contact TEXT, request TEXT, response TEXT, previous TEXT)""",
+                        nonce TEXT, contact TEXT, request TEXT, response TEXT, previous TEXT,
+                        team INTEGER NOT NULL DEFAULT 0)""",
                     """CREATE TABLE IF NOT EXISTS courier_routes (
                         contact TEXT PRIMARY KEY, target TEXT NOT NULL,
-                        mode TEXT NOT NULL CHECK(mode IN ('ask', 'direct')))""", ANNOUNCE_TABLE):
+                        mode TEXT NOT NULL CHECK(mode IN ('ask', 'direct')))""", ANNOUNCE_TABLE,
+                    *OWNER_TABLES, *MEMBER_TABLES):
                 self.db.execute(statement)
+            if "team" not in {column[1] for column in self.db.execute("PRAGMA table_info(courier_offer)")}:
+                self.db.execute("ALTER TABLE courier_offer ADD COLUMN team INTEGER NOT NULL DEFAULT 0")
             row = self.db.execute("SELECT data FROM courier_settings WHERE id=1").fetchone()
             if row is None:
                 self.db.execute("INSERT INTO courier_settings VALUES(1,?)", (json.dumps({**config, **(readdress or {})}),))
@@ -145,6 +151,7 @@ class Courier(PairingMixin, AddressMixin, OutboundMixin):
         person(name)
         with self.transaction():
             self._untrust_locked(name)
+            self._block_locked(name)  # Unpaired by hand: no team owner may introduce them again.
         self.sync_config()
 
     def _untrust_locked(self, name):
@@ -171,6 +178,10 @@ class Courier(PairingMixin, AddressMixin, OutboundMixin):
             row = self.queue.get(message_id)
             if row is not None and row["state"] == "cancelled":
                 self.db.execute("UPDATE courier_sent SET state='cancelled' WHERE id=?", (message_id,))
+        self.db.execute("DELETE FROM courier_introduced WHERE name=?", (name,))
+        if name == self.owner():
+            self._leave_team_locked()  # Unpairing the owner ends the membership.
+        self._team_forget_locked(name)
 
     def contacts(self):
         with self.lock:
@@ -340,7 +351,7 @@ class Courier(PairingMixin, AddressMixin, OutboundMixin):
 
     # Background network tasks, at most one per tick, so that a slow contact keeps
     # the listener waiting at most once per tick.
-    CHORES = ("announce_once",)
+    CHORES = ("announce_once", "introduce_once", "remove_once")
 
     def chores_once(self):
         """Run the first background task, in turn, that had something to do."""

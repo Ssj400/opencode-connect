@@ -42,14 +42,16 @@ def way_back(card, name, attempts=10, wait=1.0):
     return False
 
 
-def invite_by_link(courier, config, name, replace):
-    """Open an offer, print its link, and wait for someone to pair before it lapses."""
-    code = courier.offer(name, replace=replace)
+def invite_by_link(courier, config, name, replace, *, team=False, joined=lambda contact: None):
+    """Open an offer, print its link, and wait for someone to pair before it lapses. A
+    team offer admits them to this courier's team; `joined(contact)` then follows."""
+    code = courier.team_invite(name, replace=replace) if team else courier.offer(name, replace=replace)
     host = listen_address(config["listen"], allow_wildcard=True)[0]
-    print(f"Pairing offer from {config['person']} at {config['listen']}, open for {OFFER_SECONDS // 60} minutes.")
+    print(f"{'Team' if team else 'Pairing'} offer from {config['person']} at {config['listen']}, "
+          f"open for {OFFER_SECONDS // 60} minutes.")
     print("On the other person's machine, run:")
-    print(f"  python3 bin/courier.py pair '{config['url']}#{code}'")
-    print("Send it privately: whoever uses it first becomes a contact.")
+    print(f"  python3 bin/courier.py {'join' if team else 'pair'} '{config['url']}#{code}'")
+    print("Send it privately: whoever uses it first " + ("joins your team." if team else "becomes a contact."))
     if not is_vpn(host):
         print(f"Warning: {host} is not in a VPN range. Messages travel unencrypted, so other devices "
               "on this network could read them.")
@@ -74,6 +76,7 @@ def invite_by_link(courier, config, name, replace):
     else:
         print(f"Paired with {contact}, but their courier did not answer at {card['url']}, so messages to "
               f"{contact} wait until it can be reached. " + reach_advice(card["url"]))
+    joined(contact)
     return 0
 
 

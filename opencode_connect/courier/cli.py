@@ -19,6 +19,7 @@ from opencode_connect.courier.settings import (clean_display, contact_url, defau
                                                require_terminal, write_config)
 from opencode_connect.courier.setup import firewall_for, setup
 from opencode_connect.courier.status import status
+from opencode_connect.courier.teamflow import join_team_by_link, team_command
 from opencode_connect.courier.worker import relay_worker, run_courier, stop_on_sigterm
 
 def real_queue(config_path):
@@ -101,6 +102,18 @@ def main(argv=None, *, queue_factory=real_queue):
     pair.add_argument("link", nargs="?", help="The link the other person's `pair` printed; without it, print one")
     pair.add_argument("--for", dest="for_person", help="Accept only this person's courier")
     pair.add_argument("--replace", action="store_true", help="Pair again with someone who is already a contact")
+    team = sub.add_parser("team", help="Your team: one link admits a machine, and you introduce it to every member")
+    actions = team.add_subparsers(dest="action", required=True)
+    team_invite = actions.add_parser("invite", help="Print a link that admits one machine to your team")
+    team_invite.add_argument("--for", dest="for_person", help="Accept only this person's courier")
+    team_invite.add_argument("--replace", action="store_true", help="Admit again someone who is already a contact")
+    actions.add_parser("remove", help="Remove a member: the others drop it, and it drops them").add_argument("person")
+    actions.add_parser("introduce", help="Introduce a member again to the members it is not connected with"
+                       ).add_argument("person")
+    actions.add_parser("leave", help="Leave the team you joined: its owner can no longer change your contacts")
+    join = sub.add_parser("join", help="Join a team with the link its owner's `team invite` printed")
+    join.add_argument("link")
+    join.add_argument("--replace", action="store_true", help="Join again when its owner is already a contact")
     unpair = sub.add_parser("unpair", help="Stop exchanging messages with a contact, in both directions")
     unpair.add_argument("person")
     sub.add_parser("contacts", help="List contact direction permissions and routes, without tokens")
@@ -137,7 +150,7 @@ def main(argv=None, *, queue_factory=real_queue):
             listen_address(args.listen, args.allow_wildcard)
             contact_url(args.url)
             interactive_confirmation(f"Confirm address: listen on {args.listen}, reachable at {args.url}")
-        elif args.command in {"approve", "contact", "pair", "setup", "unpair"}:
+        elif args.command in {"approve", "contact", "join", "pair", "setup", "team", "unpair"}:
             require_terminal()  # The code is asked once it is clear what would change.
         elif (args.command in {"init", "invite", "trust", "untrust", "reject"}
                 or args.command == "service" and args.action in {"install", "uninstall", "start", "stop"}):
@@ -214,6 +227,10 @@ def main(argv=None, *, queue_factory=real_queue):
                 if args.for_person is not None:
                     raise BridgeError("--for applies when this side prints the link.")
                 return join_by_link(courier, config, args.link, args.replace)
+            elif args.command == "join":
+                return join_team_by_link(courier, config, args.link, args.replace)
+            elif args.command == "team":
+                return team_command(courier, config, args)
             elif args.command == "contact":
                 from opencode_connect.local.mailbox import canonical
                 target = local_target(canonical(args.to, queue.node))

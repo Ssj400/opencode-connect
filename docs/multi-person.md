@@ -82,7 +82,7 @@ once; ask bob to run `unpair` with your name too.
 Implemented: the HTTP courier, contacts and approval, the real local queue v2
 adapter and MCP person targets, read-only diagnostics (B1–B6), and the simplified
 flow: `setup`, `pair`, the optional service, per-contact routes, `status`, and
-`unpair`. A LAN acceptance test (B7) of the manual flow passed. The simplified
+`unpair`; and teams, with `team invite` and `join`. A LAN acceptance test (B7) of the manual flow passed. The simplified
 flow needs its own separately authorized live test. Offline tests cover both an
 injected `FakeQueue` and real `LocalMailbox` instances, including independent
 CLI/worker connections, crash recovery, and racing revocation. Publishing the
@@ -119,7 +119,9 @@ python3 -B tools/audit_public.py
   **that contact's messages only**, and querying the courier identity. It never
   authorizes local delivery, conversation reads, file transfers, or shell access.
 - Consent is bilateral: each side stores the other's card only after its own
-  operator ran `pair` or `trust`.
+  operator ran `pair` or `trust`, or joined a team whose owner introduces its
+  members to each other (see [Teams](#teams)): joining delegates that consent to the
+  owner.
 - A card contains a bearer token. This side keeps only the SHA-256 digest of the
   token it issued. Never publish a card, log it, or paste it in an agent chat.
   Whoever holds a contact's token can send messages as that contact, and can also
@@ -208,6 +210,44 @@ address and in total.
 
 When no courier runs, as when the service is not installed, `pair` serves in
 the foreground while it waits.
+
+## Teams
+
+For machines that should all reach each other, such as a team at work, one
+courier owns a team: each machine joins once, and the owner introduces it to
+every member, instead of each pair running `pair`.
+
+- **Joining.** The owner runs `team invite` (`--for NAME` accepts only that
+  courier, `--replace` admits a contact again). It prints a link, as `pair` does;
+  the new machine runs `join 'LINK'`, which shows the owner and the members and
+  asks for one code. Declining stores nothing. The new machine is then paired with
+  the owner, as with `pair`, and is a member. Using `pair` with a team link, or
+  `join` with a pairing link, is refused with the right command to use.
+- **Introductions.** The owner's courier introduces the newcomer to each member in
+  three steps, so that nobody holds a card the other side does not accept yet: the
+  newcomer accepts the member's token; the member accepts the newcomer's token and
+  takes its card; the newcomer takes the member's card. Each step can be repeated
+  harmlessly. A member that cannot be reached is introduced when it can, with
+  backoff; an introduction unfinished after 30 days is undone where a step was
+  taken. `team invite` and `join` keep serving for up to 90 seconds while the
+  introductions go out; the service carries on after that.
+- **What the owner can do.** It generates both tokens of each pair, so **it could
+  write to a member as another member**; each member accepts that when it joins,
+  and `join` says so. It cannot touch a member's own contacts, bring back a name the
+  member unpaired by hand (until the member pairs with them by hand again), or give
+  a card whose URL is not an IP on a VPN or LAN range. A member answers
+  introductions and removals only from its owner, and postpones one while it is
+  pairing with that name itself.
+- **Leaving and removing.** `team remove NAME` makes the other members drop it and
+  it drop them; unpairing a member does the same, except on the member's side,
+  which the owner can no longer reach. `team introduce NAME` retries the pairs that
+  failed. `team leave`, or unpairing the owner, ends a membership; the member keeps
+  the contacts it has, as its own. A courier is in one team at a time, and one that
+  owns a team joins none.
+- **Network.** Every member's courier must reach every other's: on a VPN with
+  access rules, open the courier's port among all of the team's machines.
+- **Status** shows the team, the introductions and removals under way, and why a
+  pair was not introduced.
 
 ## Routes and approval
 
@@ -416,6 +456,14 @@ agent is required.
   only that contact's card URL. The URL must name the IP the request came from, as a
   pairing card must; a contact without a card here gets 409. The answer says whether
   anything changed, so a repeat is harmless.
+- `POST /v1/team/introduce` accepts exactly `{person, accept, card, told?}` from the
+  member's owner: `accept` is the digest of the token `person` will use, and `card`
+  is null or `person`'s card. `told` is the URL `person` was given for this courier;
+  when it is no longer current, this courier announces its URL to `person`.
+  `POST /v1/team/remove` accepts exactly `{person}` from the owner and removes only
+  a contact the owner introduced. Anyone but the owner gets 410. Both answer
+  `{person, changed}`. A teammate that announces a new address before its card
+  arrives gets 200, and the card takes that URL.
 - Authentication occurs before body reads, except on `POST /v1/pair`, which has
   its own limits. Socket timeout is three seconds;
   bodies and responses are bounded at 64 KiB; message text at 12,000 characters.

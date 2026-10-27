@@ -124,9 +124,8 @@ the reply; their human still chooses.
 The courier belongs to the people, not to the agents. Never run `courier.py` or read
 its configuration, state, pairing links, contact cards, or tokens; `people` shows
 only contact names and which way each works, and a contact is not permission to
-write to them. Its commands, such
-as `setup`, `pair`, `contact`, `approve`, and `unpair`, need the person's terminal and a
-confirmation code. When a contact is missing or a message stays held, tell the user
+write to them. Its commands, such as `setup`, `pair`, `team`, `join`, `contact`,
+`approve`, and `unpair`, need the person's terminal and a confirmation code. When a contact is missing or a message stays held, tell the user
 which command would help, such as `python3 bin/courier.py status`, and let them run it.
 
 ## Files (`laptop_bridge` only)

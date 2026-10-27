@@ -149,6 +149,25 @@ Each person, on their own machine:
      available.
 6. **To stop:** `python3 bin/courier.py unpair NAME` (menu 5), on both sides.
 
+### A team
+
+When several machines should all reach each other, such as a team at work, one person
+owns the team instead of every pair running `pair`:
+
+1. Every machine runs `setup` (menu 1), as above.
+2. The owner runs `python3 bin/courier.py team invite` once per new machine and sends the
+   link privately. On the new machine, `python3 bin/courier.py join 'LINK'` shows the
+   owner and the members, and asks for one code.
+3. The owner's courier then introduces the new machine to every member. Keep the
+   couriers running, as the service does, until `status` shows nothing under way.
+
+Before they join, explain the trade-off: the owner creates the tokens of each pair, so
+the owner could write to one member as another. A member's own contacts, and anyone it
+unpaired by hand, stay out of the owner's reach, and `python3 bin/courier.py team leave`
+ends it. Every machine must reach every other on the courier's port: on a VPN with
+access rules, open it among all of them. The owner also has `team remove NAME`, and
+`team introduce NAME` to retry pairs that failed.
+
 ### When this machine's address changes
 
 The courier listens on one IP, the one chosen in setup. It stops being reachable when
@@ -202,6 +221,7 @@ Details and the security model: [federated messaging](../../docs/multi-person.md
 | `ping` to the other machine answers, but `pair` times out | The VPN's access rules or a firewall block the courier's port | Ask whoever manages the VPN to allow that TCP port between both machines, both ways ("Another person" says where each VPN keeps its rules); check each firewall |
 | `pair` fails or waits | Firewall, VPN, or an expired link | From the other machine, `curl -s -o /dev/null -w '%{http_code}\n' http://ADDRESS:PORT/v1/whoami` should print 401; a new `pair` gives a new link |
 | A contact's messages are "held with no destination" | No route for that contact | Menu 4 |
+| `status` says two members were not introduced | One of them refused (its own contact, or a name it unpaired), an older courier, or 30 days passed | Once the cause is fixed, the owner runs `python3 bin/courier.py team introduce NAME` |
 | "The local queue belongs to node X" | The terminal uses another node name | Set `OPENCODE_CONNECT_LOCAL_NODE` as the message says |
 | Anything else | | Read-only checks: `python3 bin/bridge.py doctor --local` and `python3 bin/courier.py doctor` |
 
@@ -209,6 +229,8 @@ Details and the security model: [federated messaging](../../docs/multi-person.md
 
 - **A contact:** `python3 bin/courier.py unpair NAME`.
 - **The service:** `python3 bin/courier.py service uninstall`.
+- **A team:** a member runs `python3 bin/courier.py team leave` and keeps its contacts;
+  the owner runs `python3 bin/courier.py team remove NAME`.
 - **A project's connection:**
   - Claude Code: `claude mcp remove opencode_connect --scope local`, and delete the
     opencode-connect hooks from `.claude/settings.local.json`.
