@@ -31,11 +31,13 @@ class MenuTests(unittest.TestCase):
         self.path = self.root / "courier.json"
         self.factory = Mock()
 
-    def menu(self, *answers, contacts=("alice", "bob"), rows=ROWS, connect=None, lost=None):
+    def menu(self, *answers, contacts=("alice", "bob"), rows=ROWS, connect=None, lost=None, config=None, state=None):
         """The menu with `answers` typed in order; then the input ends, as with Ctrl+D."""
         typed = list(answers)
+        self.prompts = []
 
         def ask(prompt=""):
+            self.prompts.append(prompt)
             if not typed:
                 raise EOFError
             return typed.pop(0)
@@ -46,6 +48,8 @@ class MenuTests(unittest.TestCase):
                 patch("opencode_connect.courier.menu.destinations", return_value=list(rows)), \
                 patch("opencode_connect.courier.menu.connect_project", side_effect=connect) as connected, \
                 patch("opencode_connect.courier.menu.host.lost_address", return_value=lost), \
+                patch("opencode_connect.courier.menu.current_config", return_value=config), \
+                patch("opencode_connect.courier.menu.queue_state", return_value=state), \
                 patch("sys.stdout", new_callable=io.StringIO) as output:
             result = run_menu(self.path, self.factory)
         self.assertEqual(result, 0)
@@ -105,13 +109,46 @@ class MenuTests(unittest.TestCase):
         self.assertIn("is not a folder", output)
 
     def test_addresses_are_listed_and_wrong_choices_are_asked_again(self):
-        commands, _, output = self.menu("9", "", "10", "x")
+        commands, _, output = self.menu("9", "", "13", "x")
         self.assertEqual(commands, [])
         for row in ROWS:
             self.assertIn(row["address"], output)
-        self.assertEqual(output.count("Type a number from 0 to 9."), 2)
+        self.assertEqual(output.count("Type a number from 0 to 12."), 2)
         _, _, output = self.menu("9", "", rows=[])
         self.assertIn("No sessions found", output)
+
+    def test_a_team_invitation_asks_before_replacing_a_contact(self):
+        commands, _, _ = self.menu("10", "", "", "10", "carol", "", "10", "bob", "y", "", "10", "alice", "n", "")
+        self.assertIn("bob is already a contact. Admit them to your team, replacing that pairing? [y/N]: ",
+                      self.prompts)
+        self.assertEqual(commands, [["team", "invite"], ["team", "invite", "--for", "carol"],
+                                    ["team", "invite", "--for", "bob", "--replace"]])
+
+    def test_joining_a_team_asks_when_the_link_comes_from_a_contact(self):
+        erin = {"person": "erin", "url": "http://192.0.2.10:8765", "token": "E" * 43}
+        config = {**configuration(), "contacts": {"erin": erin}}
+        commands, _, output = self.menu("11", LINK, "y", "", "11", LINK, "n", "", "11", "", "", config=config)
+        self.assertEqual(commands, [["join", LINK, "--replace"]])
+        self.assertIn("The link comes from erin, already a contact. Join their team, replacing that "
+                      "pairing? [y/N]: ", self.prompts)
+        commands, _, _ = self.menu("11", LINK, "", "11", "not a link", "", config=None)
+        self.assertEqual(commands, [["join", LINK], ["join", "not a link"]])
+
+    def team(self, owner=None, members=()):
+        return {"owner": owner, "members": list(members), "intros": [], "removals": {}}
+
+    def test_the_team_entry_lets_an_owner_manage_members_and_a_member_leave(self):
+        for state in (None, self.team()):  # Not run yet, or no team.
+            commands, _, output = self.menu("12", "", state=state)
+            self.assertEqual(commands, [])
+            self.assertIn("No team yet", output)
+        commands, _, output = self.menu("12", "2", "1", "", "12", "1", "2", "", "12", "1", "0", "",
+                                        state=self.team(members=("bob", "carol")))
+        self.assertEqual(commands, [["team", "remove", "carol"], ["team", "introduce", "bob"]])
+        self.assertIn("Team: yours, with bob, carol.", output)
+        commands, _, output = self.menu("12", "1", "", "12", "0", "", state=self.team(owner="erin"))
+        self.assertEqual(commands, [["team", "leave"]])
+        self.assertIn("you are in erin's team", output)
 
 
 class MenuListTests(unittest.TestCase):

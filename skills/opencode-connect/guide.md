@@ -43,6 +43,13 @@ and lists contacts and sessions to choose from instead of asking for IDs:
 - **8. Connect a project's sessions (OpenCode and Claude Code):** connects a project to the
   local queue.
 - **9. Show session addresses:** the address of each session on this machine.
+- **10. Invite a machine to your team: show a link:** `courier.py team invite`. For someone
+  who is already a contact, it asks before replacing that pairing.
+- **11. Join a team with its link:** `courier.py join 'LINK'`; it also asks when the link
+  comes from an existing contact.
+- **12. Your team: members, removing, leaving:** shows the team. The owner removes a
+  member or introduces it again (`team remove`, `team introduce`); a member leaves
+  (`team leave`).
 
 ## Sessions on one machine
 
@@ -155,9 +162,9 @@ When several machines should all reach each other, such as a team at work, one p
 owns the team instead of every pair running `pair`:
 
 1. Every machine runs `setup` (menu 1), as above.
-2. The owner runs `python3 bin/courier.py team invite` once per new machine and sends the
-   link privately. On the new machine, `python3 bin/courier.py join 'LINK'` shows the
-   owner and the members, and asks for one code.
+2. The owner runs `python3 bin/courier.py team invite` (menu 10) once per new machine and
+   sends the link privately. On the new machine, `python3 bin/courier.py join 'LINK'`
+   (menu 11) shows the owner and the members, and asks for one code.
 3. The owner's courier then introduces the new machine to every member. Keep the
    couriers running, as the service does, until `status` shows nothing under way.
 
@@ -165,8 +172,9 @@ Before they join, explain the trade-off: the owner creates the tokens of each pa
 the owner could write to one member as another. A member's own contacts, and anyone it
 unpaired by hand, stay out of the owner's reach, and `python3 bin/courier.py team leave`
 ends it. Every machine must reach every other on the courier's port: on a VPN with
-access rules, open it among all of them. The owner also has `team remove NAME`, and
-`team introduce NAME` to retry pairs that failed.
+access rules, open it among all of them. Menu 12, or `team remove NAME` and
+`team introduce NAME` (which retries pairs that failed), manage the team; a member
+leaves with `team leave`.
 
 ### When this machine's address changes
 
