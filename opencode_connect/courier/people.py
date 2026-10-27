@@ -8,13 +8,15 @@ import time
 from opencode_connect.courier.doctor import open_state
 from opencode_connect.courier.status import COURIER, read_state
 
-NO_COURIER = (f"No courier is set up on this machine, so there is no person:NAME to write to. "
-              f"The user sets one up with `{COURIER} setup`, then `{COURIER} pair`.")
+NO_COURIER = (f"This machine's queue has no courier yet, so there is no person:NAME to write to. Either "
+              f"none is set up (the user runs `{COURIER} setup`, then `{COURIER} pair`), or it has not run yet "
+              f"(its service, `{COURIER} run`, or a first `pair` starts it), or this server uses another queue "
+              "than the courier: they need the same machine, user, and OPENCODE_CONNECT_LOCAL_* variables.")
 NO_CONTACTS = f"No contacts yet: the user pairs with someone with `{COURIER} pair`."
 HELD_HERE = f"Held for your user's approval: they see and approve it with `{COURIER} approve`."
 THEIRS = {"held": "{name}'s courier holds it until {name} approves it.",
           "approved": "{name} approved it for one of their sessions.",
-          "rejected": "{name}'s courier rejected it.",
+          "rejected": "{name} rejected it, or no longer has you as a contact.",
           "expired": "{name} did not approve it in time, so it expired."}
 
 

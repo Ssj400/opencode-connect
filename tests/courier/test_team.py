@@ -393,7 +393,8 @@ class TeamTests(unittest.TestCase):
         app = self.apps[name]
         state = read_state(app.db, self.now)
         app.db.rollback()  # read_state's transaction only read.
-        contacts = [line for contact in sorted(state["config"]["contacts"])
+        config = state["config"]
+        contacts = [line for contact in sorted(set(config["contacts"]) | set(config["tokens"]))
                     for line in describe_contact(contact, state["config"], state, self.now)]
         return contacts + team_lines(state)
 
@@ -422,6 +423,15 @@ class TeamTests(unittest.TestCase):
                       "`python3 bin/courier.py team leave` stops it.", lines)
         self.assertIn("introduced by alice", next(line for line in lines if line.startswith("  bob:")))
         self.assertNotIn("introduced", next(line for line in lines if line.startswith("  alice:")))
+
+    def test_a_newcomer_halfway_through_an_introduction_is_not_told_to_pair_again(self):
+        self.join("bob")
+        self.join("carol")
+        self.alice.introduce_once()  # Carol accepts bob's token before she has bob's card.
+        (line,) = [line for line in self.status("carol") if line.startswith("  bob:")]
+        self.assertIn("bob can write to you, but you cannot write back: the introduction is still under way; "
+                      "introduced by alice", line)
+        self.assertNotIn("pair again", line)
 
 
 class MigrationTests(unittest.TestCase):

@@ -99,9 +99,11 @@ def read_state(db, now):
 
 def describe_contact(name, config, state, now):
     receiving, sending = name in config["tokens"], name in config["contacts"]
+    # A teammate's introduction gives one direction before the other.
+    fix = "the introduction is still under way" if name in state["introduced"] else "pair again"
     parts = ["both ways" if receiving and sending else
-             f"{name} can write to you, but you cannot write back: pair again" if receiving else
-             f"you can write to {name}, but {name} cannot write to you: pair again"]
+             f"{name} can write to you, but you cannot write back: {fix}" if receiving else
+             f"you can write to {name}, but {name} cannot write to you: {fix}"]
     if name in state["introduced"]:
         parts.append(f"introduced by {state['owner']}")
     if receiving:
