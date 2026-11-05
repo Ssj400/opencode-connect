@@ -17,7 +17,7 @@ import time
 from urllib.parse import urlsplit
 
 from opencode_connect.core import BridgeError
-from opencode_connect.courier.settings import (SOCKET_TIMEOUT, RequestError, contact_url, person,
+from opencode_connect.courier.settings import (PERSON, SOCKET_TIMEOUT, RequestError, contact_url, person,
                                                validate_card)
 from opencode_connect.transports import HttpError, http_json
 
@@ -113,8 +113,9 @@ class Throttle:
 class PairingMixin:
     """The inviting side of pairing, for Courier, whose single offer row it owns."""
 
-    def offer(self, name=None, *, replace=False):
-        """Open the one offer for OFFER_SECONDS and return its code; only the derived key is kept."""
+    def offer(self, name=None, *, replace=False, team=False):
+        """Open the one offer for OFFER_SECONDS and return its code; only the derived key is
+        kept. A team offer admits a machine to this courier's team."""
         if name is not None:
             person(name)
         code = new_code()
@@ -124,8 +125,9 @@ class PairingMixin:
             row = self.db.execute("SELECT state FROM courier_offer WHERE id=1").fetchone()
             if row is not None and row[0] == "provisional":
                 raise BridgeError("Another pairing waits for its confirmation; try again in a few minutes.")
-            self.db.execute("INSERT OR REPLACE INTO courier_offer(id, key, expires, name, replacing, state) "
-                            "VALUES(1,?,?,?,?,'open')", (key.hex(), self.clock() + OFFER_SECONDS, name, int(replace)))
+            self.db.execute("INSERT OR REPLACE INTO courier_offer(id, key, expires, name, replacing, state, team) "
+                            "VALUES(1,?,?,?,?,'open',?)",
+                            (key.hex(), self.clock() + OFFER_SECONDS, name, int(replace), int(team)))
         if revoked:
             self.sync_config()
         return code
@@ -153,11 +155,16 @@ class PairingMixin:
             raise RequestError(400, "Invalid pairing card.") from exc
         nonce, request = payload["nonce"], digest(json.dumps(payload, sort_keys=True))
         with self.lock:
-            row = self.db.execute("SELECT key FROM courier_offer WHERE id=1 AND expires>?", (self.clock(),)).fetchone()
+            row = self.db.execute("SELECT key, team FROM courier_offer WHERE id=1 AND expires>?",
+                                  (self.clock(),)).fetchone()
         if row is None:
             raise RequestError(404, "No pairing offer is open.")
-        key = bytes.fromhex(row[0])
-        if not hmac.compare_digest(seal(key, b"join", nonce, card), payload["mac"]):
+        key, team = bytes.fromhex(row[0]), bool(row[1])
+        labels = (b"team-join", b"join") if team else (b"join", b"team-join")
+        if not hmac.compare_digest(seal(key, labels[0], nonce, card), payload["mac"]):
+            if hmac.compare_digest(seal(key, labels[1], nonce, card), payload["mac"]):
+                raise RequestError(409, "This link joins a team: use `courier.py join LINK`." if team else
+                                   "This link pairs two couriers: use `courier.py pair LINK`.")
             raise RequestError(403, "The pairing code does not match.")
         with self.transaction():
             offer = self.db.execute("SELECT key, name, replacing, state, nonce, request, response FROM courier_offer "
@@ -182,8 +189,14 @@ class PairingMixin:
             token = secrets.token_urlsafe(32)
             config["tokens"][name], config["contacts"][name] = digest(token), card
             self.save_settings(config)
+            self._own_contact_locked(name)  # Paired by hand: no longer introduced or blocked.
             own = {"person": config["person"], "url": config["url"], "token": token}
-            answer = {"card": own, "mac": seal(key, b"offer", nonce, own)}
+            if team:
+                members = self._team_answer_locked(name)
+                answer = {"card": own, "team": members,
+                          "mac": seal(key, b"team-offer", nonce, {"card": own, "team": members})}
+            else:
+                answer = {"card": own, "mac": seal(key, b"offer", nonce, own)}
             # The answer keeps this token in clear until confirmation, for a repeated request.
             self.db.execute("UPDATE courier_offer SET state='provisional', nonce=?, contact=?, request=?, response=?, "
                             "previous=? WHERE id=1", (nonce, name, request, json.dumps(answer), json.dumps(previous)))
@@ -198,6 +211,8 @@ class PairingMixin:
             revoked = self._expire_offer_locked()
             if not revoked:
                 name = self.authenticate(authorization) if rate_checked else self.check_request(authorization)
+                before = self.db.execute("SELECT state, team FROM courier_offer WHERE id=1 AND nonce=? AND contact=?",
+                                         (payload["nonce"], name)).fetchone()
                 # The answer's token is no longer needed in clear; the CLI gets a minute to report.
                 confirmed = self.db.execute(
                     "UPDATE courier_offer SET state='confirmed', response=NULL, expires=max(expires, ?) "
@@ -205,6 +220,8 @@ class PairingMixin:
                     (self.clock() + 60, payload["nonce"], name)).rowcount
                 if confirmed:
                     self.note_peer(name)
+                    if before[0] == "provisional" and before[1]:
+                        self._team_member_joined_locked(name)  # Once, on the first confirmation.
                     config = self.settings()
         if revoked:
             self.sync_config()
@@ -261,10 +278,16 @@ class PairingMixin:
 
 
 def join_offer(courier, link, *, replace=False, attempts=3, wait=1.0):
-    """Pair with the courier behind a link that its `pair` printed. Returns its name.
+    """Pair with the courier behind a link that its `pair` printed. Returns its name."""
+    pending = request_pairing(courier, link, replace=replace, attempts=attempts, wait=wait)
+    return store_pairing(courier, pending, replace=replace, attempts=attempts, wait=wait)
 
-    Trust is stored only after the inviter proved it knows the code, and undone if
-    the inviter does not take the confirmation.
+
+def request_pairing(courier, link, *, replace=False, team=False, attempts=3, wait=1.0):
+    """Send the pairing request for a link and check that the answer comes from the code's
+    holder. Nothing is stored here; `store_pairing` does it, after any confirmation.
+
+    For a team, the answer also names its owner and members, under the same MAC.
     """
     origin, code = parse_link(link)
     config = courier.settings()
@@ -274,21 +297,40 @@ def join_offer(courier, link, *, replace=False, attempts=3, wait=1.0):
     key = pairing_key(code)
     token, nonce = secrets.token_urlsafe(32), secrets.token_hex(16)
     own = {"person": config["person"], "url": config["url"], "token": token}
+    label = b"team-join" if team else b"join"
     try:
         answer = retrying(lambda: http_json(origin + "/v1/pair", method="POST", timeout=SOCKET_TIMEOUT,
-                                            data={"nonce": nonce, "card": own, "mac": seal(key, b"join", nonce, own)}),
+                                            data={"nonce": nonce, "card": own, "mac": seal(key, label, nonce, own)}),
                           attempts, wait)
-    except HttpError:
+    except HttpError as exc:
+        if team and exc.status == 403:  # An older courier, or a link that `pair` printed.
+            raise BridgeError(f"{exc} If this link came from `pair`, use `courier.py pair LINK`.") from exc
         raise  # It answered: the code, the offer, or the address was refused.
     except BridgeError as exc:
         raise BridgeError(f"No answer from {origin}: {str(exc).rstrip('.')}. {reach_advice(origin)}") from exc
+    members = None
     try:
         card = validate_card(answer["card"])
-        valid = hmac.compare_digest(seal(key, b"offer", nonce, card), str(answer["mac"]))
+        if team:
+            members = answer["team"]
+            if (not isinstance(members, list) or len(members) > 100
+                    or any(not isinstance(name, str) or not PERSON.fullmatch(name) for name in members)):
+                raise BridgeError("Invalid team members.")
+            valid = hmac.compare_digest(seal(key, b"team-offer", nonce, {"card": card, "team": members}),
+                                        str(answer["mac"]))
+        else:
+            valid = hmac.compare_digest(seal(key, b"offer", nonce, card), str(answer["mac"]))
     except (BridgeError, KeyError, TypeError):
         valid = False
     if not valid or card["url"] != origin:
         raise BridgeError("The courier at this link did not prove it knows the code; nothing was stored.")
+    return {"origin": origin, "nonce": nonce, "token": token, "card": card, "team": members}
+
+
+def store_pairing(courier, pending, *, replace=False, attempts=3, wait=1.0):
+    """Store a verified card, and the team membership it brings, then confirm. Trust is
+    undone if the inviter does not take the confirmation. Returns the inviter's name."""
+    card, team = pending["card"], pending["team"]
     name = card["person"]
     with courier.transaction():
         config = courier.settings()
@@ -297,19 +339,24 @@ def join_offer(courier, link, *, replace=False, attempts=3, wait=1.0):
         if (name in config["tokens"] or name in config["contacts"]) and not replace:
             raise BridgeError(f"{name} is already a contact; pair again with --replace.")
         previous = {"token": config["tokens"].get(name), "card": config["contacts"].get(name)}
-        config["tokens"][name], config["contacts"][name] = digest(token), card
+        config["tokens"][name], config["contacts"][name] = digest(pending["token"]), card
         courier.save_settings(config)
+        courier._own_contact_locked(name)
+        if team is not None:
+            courier._join_team_locked(name)
     courier.sync_config()
     try:
-        retrying(lambda: http_json(origin + "/v1/pair/ack", method="POST", data={"nonce": nonce},
+        retrying(lambda: http_json(pending["origin"] + "/v1/pair/ack", method="POST", data={"nonce": pending["nonce"]},
                                    headers={"Authorization": "Bearer " + card["token"]}, timeout=SOCKET_TIMEOUT),
                  attempts, wait)
     except BridgeError as exc:
         with courier.transaction():
             if previous["token"] is None and previous["card"] is None:
-                courier._untrust_locked(name)
+                courier._untrust_locked(name)  # Also ends a team membership that came with it.
             else:
                 courier._restore_contact_locked(name, previous)
+                if team is not None:
+                    courier._leave_team_locked()
         courier.sync_config()
         raise BridgeError(f"{name} did not take the confirmation ({exc}), so the pairing was undone here; "
                           "ask for a new link.") from exc

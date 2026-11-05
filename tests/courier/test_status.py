@@ -57,11 +57,11 @@ class StatusTests(unittest.TestCase):
         self.app.trust("dave", {"person": "dave", "url": "http://192.0.2.30:8765", "token": "D" * 43})
         self.app.receive("Bearer " + carol["token"], {"text": "hello", "idempotency_key": "one"})
         self.box.enqueue("wsl:ses_example", "person:bob", "draft one")
-        with patch("opencode_connect.courier.app.http_json", return_value={"id": "msg_" + "3" * 32, "state": "held"}):
+        with patch("opencode_connect.courier.outbound.http_json", return_value={"id": "msg_" + "3" * 32, "state": "held"}):
             self.app.send_once()
         self.now += 60
         self.box.enqueue("wsl:ses_example", "person:bob", "draft two")
-        with patch("opencode_connect.courier.app.http_json", side_effect=BridgeError("Connection refused.")):
+        with patch("opencode_connect.courier.outbound.http_json", side_effect=BridgeError("Connection refused.")):
             self.app.send_once()
         with patch("opencode_connect.courier.pairing.KDF_ROUNDS", 1000):
             self.app.offer("erin")

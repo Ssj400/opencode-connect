@@ -162,7 +162,7 @@ class CourierTests(unittest.TestCase):
 
     def test_offline_destination_releases_and_retries_without_duplicates(self):
         message_id = self.alice.queue.enqueue("wsl:ses_example", "person:bob", "hello")
-        with patch("opencode_connect.courier.app.http_json", side_effect=BridgeError("Destination unavailable.")) as request:
+        with patch("opencode_connect.courier.outbound.http_json", side_effect=BridgeError("Destination unavailable.")) as request:
             self.alice.send_once()
             self.alice.send_once()
         request.assert_called_once()
@@ -193,7 +193,7 @@ class CourierTests(unittest.TestCase):
         def accepted_then_lost(*args, **kwargs):
             http_json(*args, **kwargs)
             raise BridgeError("Response lost after commit.")
-        with patch("opencode_connect.courier.app.http_json", side_effect=accepted_then_lost):
+        with patch("opencode_connect.courier.outbound.http_json", side_effect=accepted_then_lost):
             self.alice.send_once()
         self.assertEqual(len(self.bob.inbox()), 1)
         self.now += 3
@@ -203,7 +203,7 @@ class CourierTests(unittest.TestCase):
 
     def test_backoff_does_not_block_other_ready_outbound(self):
         first = self.alice.queue.enqueue("wsl:ses_example", "person:bob", "offline")
-        with patch("opencode_connect.courier.app.http_json", side_effect=BridgeError("Destination unavailable.")):
+        with patch("opencode_connect.courier.outbound.http_json", side_effect=BridgeError("Destination unavailable.")):
             self.alice.send_once()
         second = self.alice.queue.enqueue("wsl:ses_other", "person:bob", "ready")
         self.assertEqual(self.alice.send_once(), second)
@@ -218,7 +218,7 @@ class CourierTests(unittest.TestCase):
         def accepted_then_crashed(*args, **kwargs):
             http_json(*args, **kwargs)
             raise RuntimeError("Simulated process crash.")
-        with patch("opencode_connect.courier.app.http_json", side_effect=accepted_then_crashed):
+        with patch("opencode_connect.courier.outbound.http_json", side_effect=accepted_then_crashed):
             with self.assertRaises(RuntimeError):
                 self.alice.send_once()
         self.assertEqual(self.alice.queue.get(message_id)["state"], "sending")
@@ -231,7 +231,7 @@ class CourierTests(unittest.TestCase):
 
     def test_untrust_cancels_crashed_claim_on_worker_recovery(self):
         message_id = self.alice.queue.enqueue("wsl:ses_example", "person:bob", "hello")
-        with patch("opencode_connect.courier.app.http_json", side_effect=RuntimeError("Simulated crash.")):
+        with patch("opencode_connect.courier.outbound.http_json", side_effect=RuntimeError("Simulated crash.")):
             with self.assertRaises(RuntimeError):
                 self.alice.send_once()
         self.alice.untrust("bob")
@@ -240,7 +240,7 @@ class CourierTests(unittest.TestCase):
 
     def test_person_sources_cannot_be_forwarded_automatically(self):
         message_id = self.alice.queue.enqueue("person:carol", "person:bob", "forged relay")
-        with patch("opencode_connect.courier.app.http_json") as request:
+        with patch("opencode_connect.courier.outbound.http_json") as request:
             self.alice.send_once()
         request.assert_not_called()
         self.assertEqual(self.alice.queue.get(message_id)["state"], "failed")
@@ -277,7 +277,7 @@ class CourierTests(unittest.TestCase):
             self.alice.queue.enqueue(source, "person:bob", "hello")
             self.alice.send_once()
         self.now += 61
-        with patch("opencode_connect.courier.app.http_json", side_effect=BridgeError("Peer unavailable.")) as http:
+        with patch("opencode_connect.courier.outbound.http_json", side_effect=BridgeError("Peer unavailable.")) as http:
             self.alice.poll_once()
             http.assert_called_once()
             self.alice.poll_once()
@@ -293,7 +293,7 @@ class CourierTests(unittest.TestCase):
     def test_contacts_record_when_they_last_answered_and_why_they_failed(self):
         self.assertIsNone(self.peer(self.alice, "bob"))
         self.alice.queue.enqueue("wsl:ses_example", "person:bob", "hello")
-        with patch("opencode_connect.courier.app.http_json", side_effect=BridgeError("HTTP request failed (Connection\x1b[2JRefusedError).")):
+        with patch("opencode_connect.courier.outbound.http_json", side_effect=BridgeError("HTTP request failed (Connection\x1b[2JRefusedError).")):
             self.alice.send_once()
         self.assertEqual(self.peer(self.alice, "bob"),
                          (None, "HTTP request failed (Connection[2JRefusedError).", self.now))
@@ -305,7 +305,7 @@ class CourierTests(unittest.TestCase):
     def test_waiting_uploads_cost_no_writes_until_their_retry_is_due(self):
         self.assertIsNone(self.alice.send_once())
         self.alice.queue.enqueue("wsl:ses_example", "person:bob", "hello")
-        with patch("opencode_connect.courier.app.http_json", side_effect=BridgeError("Peer unavailable.")):
+        with patch("opencode_connect.courier.outbound.http_json", side_effect=BridgeError("Peer unavailable.")):
             self.alice.send_once()
         statements = []
         self.alice.db.set_trace_callback(statements.append)
@@ -330,7 +330,7 @@ class CourierTests(unittest.TestCase):
             self.alice.db.execute("UPDATE courier_sent SET next_attempt=next_attempt-1 WHERE contact='bob'")
         self.alice.untrust("bob")
         self.now += 61
-        with patch("opencode_connect.courier.app.http_json", side_effect=BridgeError("Peer unavailable.")) as http:
+        with patch("opencode_connect.courier.outbound.http_json", side_effect=BridgeError("Peer unavailable.")) as http:
             for _ in range(2):
                 self.alice.poll_once()
         self.assertEqual(len(http.call_args_list), 1)
@@ -472,7 +472,7 @@ class CourierTests(unittest.TestCase):
         # a Carol outbound card or let this courier send to Carol.
         self.bob.invite("carol")
         message_id = self.bob.queue.enqueue("wsl:ses_example", "person:carol", "hello")
-        with patch("opencode_connect.courier.app.http_json") as request:
+        with patch("opencode_connect.courier.outbound.http_json") as request:
             self.bob.send_once()
         request.assert_not_called()
         self.assertEqual(self.bob.queue.get(message_id)["state"], "failed")

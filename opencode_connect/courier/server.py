@@ -146,6 +146,10 @@ class CourierHandler(BaseHTTPRequestHandler):
             elif method == "POST" and self.path == "/v1/address":
                 self.reply(200, self.server.courier.update_contact_url(
                     auth[0], self.json_body(length), self.client_address[0], rate_checked=True))
+            elif method == "POST" and self.path == "/v1/team/introduce":
+                self.reply(200, self.server.courier.team_introduce(auth[0], self.json_body(length), rate_checked=True))
+            elif method == "POST" and self.path == "/v1/team/remove":
+                self.reply(200, self.server.courier.team_remove(auth[0], self.json_body(length), rate_checked=True))
             elif method == "POST" and self.path == "/v1/pair/ack":
                 self.reply(200, self.server.courier.confirm_pairing(auth[0], self.json_body(length), rate_checked=True))
             else:

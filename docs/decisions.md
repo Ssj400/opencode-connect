@@ -230,6 +230,28 @@ with the menu or `address`, and the courier tells each contact's courier the new
 - **Older couriers keep working.** One that does not know the route answers 404; the
   announcement is marked so, and `status` asks for pairing again with `--replace`.
 
+## Teams with an owner
+
+At work, several machines should all reach each other, and pairing every pair by
+hand does not scale. A machine now joins a team once, and the team's owner
+introduces it to every member.
+
+- **An owner admits each machine with a one-use link.** A code shared by the whole
+  team was rejected: anyone who saw it could join, and nobody could tell who did.
+- **The owner generates and relays the tokens of each pair.** It could therefore
+  write to a member as another member. Accepted, since the machines belong to one
+  team; `join` and these docs say so. A direct handshake between members, which
+  would remove that power, costs about twice the code and may come later.
+- **Introductions take three ordered steps**, so that nobody holds a card the other
+  side does not accept yet, and each step is idempotent. An answer applies only to
+  the introduction it was for: each one has a generation.
+- **A member's own decisions stay its own.** The owner cannot replace a contact the
+  member paired, bring back a name it unpaired by hand, or point it at anything but
+  a VPN or LAN IP. Leaving the team, or unpairing the owner, ends the owner's reach;
+  the contacts stay.
+- **One team per courier**, and an owner joins none, so that two owners never manage
+  the same contacts.
+
 ## What agents see of the courier
 
 Agents could address `person:NAME` only when the user told them the name, and a

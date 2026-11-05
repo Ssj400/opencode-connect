@@ -88,14 +88,24 @@ def read_state(db, now):
                                                  "WHERE id=1 AND expires>?", now)), None),
         "announce": {name: (state, error) for name, state, error in
                      rows("courier_announce", "SELECT contact, state, last_error FROM courier_announce")},
+        "members": [name for (name,) in rows("courier_members", "SELECT name FROM courier_members ORDER BY name")],
+        "intros": rows("courier_intro", "SELECT newcomer, low, high, step, state, last_error FROM courier_intro "
+                                        "WHERE state!='done' ORDER BY low, high"),
+        "removals": dict(rows("courier_team_remove", "SELECT target, count(*) FROM courier_team_remove GROUP BY target")),
+        "owner": next(iter(rows("courier_membership", "SELECT owner FROM courier_membership WHERE id=1")), (None,))[0],
+        "introduced": {name for (name,) in rows("courier_introduced", "SELECT name FROM courier_introduced")},
     }
 
 
 def describe_contact(name, config, state, now):
     receiving, sending = name in config["tokens"], name in config["contacts"]
+    # A teammate's introduction gives one direction before the other.
+    fix = "the introduction is still under way" if name in state["introduced"] else "pair again"
     parts = ["both ways" if receiving and sending else
-             f"{name} can write to you, but you cannot write back: pair again" if receiving else
-             f"you can write to {name}, but {name} cannot write to you: pair again"]
+             f"{name} can write to you, but you cannot write back: {fix}" if receiving else
+             f"you can write to {name}, but {name} cannot write to you: {fix}"]
+    if name in state["introduced"]:
+        parts.append(f"introduced by {state['owner']}")
     if receiving:
         target, mode = state["routes"].get(name, (None, None))
         parts.append("messages are held with no destination" if target is None else
@@ -119,6 +129,33 @@ def describe_contact(name, config, state, now):
                                                  f"refused ({(reason or '').rstrip('.')})")
                      + f" your new address: pair again, with `{COURIER} pair --for {name} --replace` here "
                        "and their `pair LINK --replace`.")
+    return lines
+
+
+NOT_INTRODUCED = {"skipped": "they were connected already, or one of them unpaired the other",
+                  "conflict": "one of them refused", "unsupported": "one of their couriers is older",
+                  "expired": "it did not finish within 30 days"}
+
+
+def team_lines(state):
+    """The team this courier joined or owns, and what is still under way."""
+    lines = []
+    if state["owner"]:
+        lines.append(f"Team: you are in {state['owner']}'s team; {state['owner']} can add and remove teammates "
+                     f"as your contacts, and `{COURIER} team leave` stops it.")
+    if state["members"]:
+        lines.append("Team: yours, with " + ", ".join(state["members"]) + ".")
+    for newcomer, low, high, step, kind, error in state["intros"]:
+        member = high if newcomer == low else low
+        reason = f": {error.rstrip('.')}" if error else ""
+        if kind == "pending":
+            lines.append(f"  Introducing {newcomer} to {member}: step {step} of 3"
+                         + (f"; the last try failed{reason}." if error else "."))
+        else:
+            lines.append(f"  {newcomer} and {member} were not introduced, as {NOT_INTRODUCED[kind]}{reason}."
+                         + ("" if kind == "skipped" else f" `{COURIER} team introduce {newcomer}` tries again."))
+    for target, count in sorted(state["removals"].items()):
+        lines.append(f"  {count} teammate removal(s) wait to reach {target}.")
     return lines
 
 
@@ -174,6 +211,7 @@ def status(config_path, *, root=None, clock=time.time, proc=Path("/proc"), wsl=N
         held = sum(state["held"].values())
         if held:
             lines.append(f"{held} message(s) wait for your approval: `{COURIER} approve` shows them first.")
+        lines.extend(team_lines(state))
     if host.on_wsl() if wsl is None else wsl:
         lines.append(host.WSL_LISTENS)
     return 0, [clean_display(line) for line in lines]

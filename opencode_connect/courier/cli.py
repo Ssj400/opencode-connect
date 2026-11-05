@@ -12,18 +12,15 @@ from opencode_connect.core import BridgeError
 from opencode_connect.courier.app import Courier, local_target
 from opencode_connect.courier.doctor import doctor
 from opencode_connect.courier.notify import desktop_notification
-from opencode_connect.courier.pairing import OFFER_SECONDS, is_vpn, join_offer, reach_advice
+from opencode_connect.courier.pairflow import invite_by_link, join_by_link
 from opencode_connect.courier.service import restart_service, service_command
-from opencode_connect.courier.settings import (SOCKET_TIMEOUT, clean_display, contact_url, default_config_path,
+from opencode_connect.courier.settings import (clean_display, contact_url, default_config_path,
                                                interactive_confirmation, listen_address, read_config,
                                                require_terminal, write_config)
 from opencode_connect.courier.setup import firewall_for, setup
 from opencode_connect.courier.status import status
-from opencode_connect.courier.worker import CourierBusy, relay_worker, run_courier, stop_on_sigterm
-from opencode_connect.transports import http_json
-
-WAY_BACK_SECONDS = 30
-
+from opencode_connect.courier.teamflow import join_team_by_link, team_command
+from opencode_connect.courier.worker import relay_worker, run_courier, stop_on_sigterm
 
 def real_queue(config_path):
     from opencode_connect.local.mailbox import LocalMailbox, state_root
@@ -68,83 +65,6 @@ def approve_held(courier, message_id=None, target=None):
         print("No held messages.")
 
 
-def serve_while(courier, config, done, seconds, poll=0.5):
-    """Answer requests until `done()`, for at most `seconds`: in the foreground when no
-    worker runs, else by waiting while the worker, such as the service, answers."""
-    stop = threading.Event()
-    timer = threading.Timer(seconds, stop.set)
-    timer.daemon = True
-    timer.start()
-    try:
-        run_courier(courier, config["listen"], stop=stop, until=done)
-    except CourierBusy:
-        while not done() and not stop.is_set():
-            time.sleep(poll)
-    finally:
-        timer.cancel()
-
-
-def way_back(card, name, attempts=10, wait=1.0):
-    """Whether the contact's courier answers as them with the token it gave this side."""
-    for attempt in range(attempts):
-        try:
-            identity = http_json(card["url"] + "/v1/whoami", headers={"Authorization": "Bearer " + card["token"]},
-                                 timeout=SOCKET_TIMEOUT)
-            return isinstance(identity, dict) and identity.get("person") == name
-        except BridgeError:
-            if attempt < attempts - 1:
-                time.sleep(wait)
-    return False
-
-
-def invite_by_link(courier, config, name, replace):
-    """Open an offer, print its link, and wait for someone to pair before it lapses."""
-    code = courier.offer(name, replace=replace)
-    host = listen_address(config["listen"], allow_wildcard=True)[0]
-    print(f"Pairing offer from {config['person']} at {config['listen']}, open for {OFFER_SECONDS // 60} minutes.")
-    print("On the other person's machine, run:")
-    print(f"  python3 bin/courier.py pair '{config['url']}#{code}'")
-    print("Send it privately: whoever uses it first becomes a contact.")
-    if not is_vpn(host):
-        print(f"Warning: {host} is not in a VPN range. Messages travel unencrypted, so other devices "
-              "on this network could read them.")
-    print("Waiting...", flush=True)
-    finished = False
-    try:
-        serve_while(courier, config, lambda: (courier.offer_state() or {}).get("state") in {None, "confirmed"},
-                    OFFER_SECONDS + 5)
-        state = courier.offer_state()
-        finished = True
-    finally:
-        if not finished:
-            courier.close_offer()  # Interrupted: undo a pairing that nobody confirmed.
-    courier.close_offer()
-    if state is None or state["state"] != "confirmed":
-        print("The offer lapsed; nobody paired.")
-        return 1
-    contact = state["contact"]
-    card = courier.settings()["contacts"][contact]
-    if way_back(card, contact):
-        print(f"Paired with {contact}, both ways.")
-    else:
-        print(f"Paired with {contact}, but their courier did not answer at {card['url']}, so messages to "
-              f"{contact} wait until it can be reached. " + reach_advice(card["url"]))
-    return 0
-
-
-def join_by_link(courier, config, link, replace):
-    start = courier.clock()
-    name = join_offer(courier, link, replace=replace)
-    print(f"Paired with {name}. Waiting for {name} to check the way back...", flush=True)
-    seen = lambda: (courier.last_seen(name) or 0) >= start
-    serve_while(courier, config, seen, WAY_BACK_SECONDS)
-    print(f"{name} checked the way back: both ways work." if seen() else
-          f"{name}'s courier has not reached yours yet; keep your courier running so that their messages "
-          "arrive. If it never does, the VPN's access rules (ACLs) or this machine's firewall may block it: "
-          + reach_advice(config["url"]))
-    return 0
-
-
 def main(argv=None, *, queue_factory=real_queue):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", type=Path, default=default_config_path())
@@ -182,6 +102,18 @@ def main(argv=None, *, queue_factory=real_queue):
     pair.add_argument("link", nargs="?", help="The link the other person's `pair` printed; without it, print one")
     pair.add_argument("--for", dest="for_person", help="Accept only this person's courier")
     pair.add_argument("--replace", action="store_true", help="Pair again with someone who is already a contact")
+    team = sub.add_parser("team", help="Your team: one link admits a machine, and you introduce it to every member")
+    actions = team.add_subparsers(dest="action", required=True)
+    team_invite = actions.add_parser("invite", help="Print a link that admits one machine to your team")
+    team_invite.add_argument("--for", dest="for_person", help="Accept only this person's courier")
+    team_invite.add_argument("--replace", action="store_true", help="Admit again someone who is already a contact")
+    actions.add_parser("remove", help="Remove a member: the others drop it, and it drops them").add_argument("person")
+    actions.add_parser("introduce", help="Introduce a member again to the members it is not connected with"
+                       ).add_argument("person")
+    actions.add_parser("leave", help="Leave the team you joined: its owner can no longer change your contacts")
+    join = sub.add_parser("join", help="Join a team with the link its owner's `team invite` printed")
+    join.add_argument("link")
+    join.add_argument("--replace", action="store_true", help="Join again when its owner is already a contact")
     unpair = sub.add_parser("unpair", help="Stop exchanging messages with a contact, in both directions")
     unpair.add_argument("person")
     sub.add_parser("contacts", help="List contact direction permissions and routes, without tokens")
@@ -218,7 +150,7 @@ def main(argv=None, *, queue_factory=real_queue):
             listen_address(args.listen, args.allow_wildcard)
             contact_url(args.url)
             interactive_confirmation(f"Confirm address: listen on {args.listen}, reachable at {args.url}")
-        elif args.command in {"approve", "contact", "pair", "setup", "unpair"}:
+        elif args.command in {"approve", "contact", "join", "pair", "setup", "team", "unpair"}:
             require_terminal()  # The code is asked once it is clear what would change.
         elif (args.command in {"init", "invite", "trust", "untrust", "reject"}
                 or args.command == "service" and args.action in {"install", "uninstall", "start", "stop"}):
@@ -295,6 +227,10 @@ def main(argv=None, *, queue_factory=real_queue):
                 if args.for_person is not None:
                     raise BridgeError("--for applies when this side prints the link.")
                 return join_by_link(courier, config, args.link, args.replace)
+            elif args.command == "join":
+                return join_team_by_link(courier, config, args.link, args.replace)
+            elif args.command == "team":
+                return team_command(courier, config, args)
             elif args.command == "contact":
                 from opencode_connect.local.mailbox import canonical
                 target = local_target(canonical(args.to, queue.node))

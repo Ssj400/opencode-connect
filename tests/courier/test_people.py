@@ -77,7 +77,7 @@ class PeopleTests(unittest.TestCase):
         outbound = self.box.enqueue("local:ses_SOURCE", "person:bob", "question")
         local = self.box.enqueue("local:ses_SOURCE", "local:ses_OTHER", "note")
         remote = "msg_" + "3" * 32
-        with patch("opencode_connect.courier.app.http_json", return_value={"id": remote, "state": "held"}):
+        with patch("opencode_connect.courier.outbound.http_json", return_value={"id": remote, "state": "held"}):
             self.app.send_once()
 
         def rows():
@@ -89,7 +89,7 @@ class PeopleTests(unittest.TestCase):
                          ("held", "bob's courier holds it until bob approves it."))
         self.assertNotIn("meaning", status[local["id"]])
         self.now += 61
-        with patch("opencode_connect.courier.app.http_json", return_value={"id": remote, "state": "approved"}):
+        with patch("opencode_connect.courier.outbound.http_json", return_value={"id": remote, "state": "approved"}):
             self.app.poll_once()
         status = rows()  # The latest receipt, not the state stored at upload.
         self.assertEqual(status[outbound["id"]]["their_state"], "approved")

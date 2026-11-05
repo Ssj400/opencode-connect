@@ -86,9 +86,10 @@ class AddressMixin:
                 raise RequestError(400, f"The new URL must use the address this request came from, {peer}.")
             config = self.settings()
             card = config["contacts"].get(name)
-            if card is None:
+            # A teammate whose card is still on its way keeps the URL for that card.
+            if card is None and not self._introduced_moved_locked(name, url):
                 raise RequestError(409, "There is no card for you here to update; pair again.")
-            updated = card["url"] != url
+            updated = card is not None and card["url"] != url
             if updated:
                 config["contacts"][name] = {**card, "url": url}
                 self.save_settings(config)
